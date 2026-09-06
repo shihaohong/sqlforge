@@ -1,0 +1,48 @@
+[project]
+name = "text2sql"
+version = "0.1.0"
+description = "Fine-tune, quantize, and serve a small text-to-SQL model as a production-grade inference service"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "datasets>=3.0",
+    "sqlglot>=25.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.0",
+    "anthropic>=1.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+train = [
+    "torch>=2.5",
+    "transformers>=4.46",
+    "peft>=0.13",
+    "bitsandbytes>=0.44",
+    "trl>=0.12",
+    "accelerate>=1.0",
+    "wandb>=0.18",
+]
+serve = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "prometheus-client>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/text2sql"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

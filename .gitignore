@@ -1,0 +1,27 @@
+# Data and model artifacts
+data/
+models/
+*.gguf
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Experiment tracking
+wandb/
+
+# Environment
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Eval outputs: keep summaries, skip bulky per-example dumps
+runs/*.jsonl
