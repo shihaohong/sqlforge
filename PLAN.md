@@ -42,12 +42,15 @@ Exit criteria: one command reproduces a baseline execution-accuracy number and a
 
 ### M1: QLoRA fine-tune (GCP L4 spot)
 
-- [ ] Prompt/format design: schema serialization, one canonical prompt template shared by training and serving.
-- [ ] QLoRA fine-tune Llama-3.2 3B on Spider train (~7k examples). 4-bit base, LoRA on attention + MLP. W&B for tracking.
-- [ ] Evaluate with the M0 harness. Iterate (epochs, LR, schema format) until comfortably above base model.
+- [x] Prompt/format design: schema-as-DDL prompt template in `src/text2sql/prompts.py`, shared verbatim by training, eval, and serving (no train/serve skew possible).
+- [x] QLoRA fine-tune Llama-3.2 3B on Spider train (6,800 train / 200 val after shuffle). 4-bit NF4 base, LoRA r=16 alpha=32 on all attention + MLP projections, LR 2e-4 cosine with 25 warmup steps, effective batch 16, 2 epochs (850 steps), completion-only loss, max_length 4096. Final: train loss 0.089, val loss 0.067, val token accuracy 97.7%. ~3h wall clock on one L4.
+- [x] Evaluate with the M0 harness (served via vLLM + LoRA adapter on the L4). **72.7%** execution accuracy (752/1034), +11.3 pts over the base model, 1.3 pts under Haiku 4.5. On the shared 300-example subset it scores 74.0% vs Haiku's 71.7%. Failure profile vs base: "no such column" errors cut from 117 to 50, syntax errors near zero (2); the remaining 229 failures run but return wrong rows.
 - [ ] Stretch: same recipe on Qwen2.5-Coder 3B for comparison (often stronger at SQL).
 
-Exit criteria: fine-tuned execution accuracy beats base model by a wide margin and is within striking distance of the API baseline.
+Exit criteria: fine-tuned execution accuracy beats base model by a wide margin and is within striking distance of the API baseline. **M1 complete** (+11.3 pts over base; statistically tied with Haiku).
+
+Operational notes from the run: the spot VM was preempted twice (the second time at step 98, just before the first checkpoint), which motivated checkpoint-every-100-steps with auto-resume and, ultimately, recreating the VM as on-demand by keeping the boot disk (`--keep-disks=boot`, ~$0.85/hr vs ~$0.30/hr spot).
+Total GPU cost for M1: roughly $4.
 
 ### M2: Quantization
 
@@ -86,11 +89,11 @@ Exit criteria: `pulumi up` brings up the whole stack from scratch.
 | Llama-3.2 3B Instruct (base, zero-shot, ollama on M-series Mac) | 61.4% (635/1034) | mean 2.66s/query | n/a (local) |
 | Claude Haiku 4.5 (API baseline, zero-shot) | 74.0% (765/1034) | mean 0.95s/query | $0.68 |
 | Claude Opus 5 (quality ceiling, first 300 dev examples) | 96.7% (290/300) | mean 2.29s/query | $5.11 |
-
-Same-subset comparison (first 300 dev examples): Llama-3.2 3B 58.7%, Haiku 4.5 71.7%, Opus 5 96.7%.
-The subset is not harder or easier by construction, but scores differ slightly from full-set numbers, so cross-model comparisons should use matching example sets.
-| Fine-tuned 3B (fp16) | - | n/a | n/a |
+| **Fine-tuned 3B (QLoRA adapter, vLLM on L4)** | **72.7% (752/1034)** | mean 1.11s/query (8-way concurrent) | measured at M3 |
 | Fine-tuned 3B (AWQ 4-bit, vLLM on L4) | - | - | - |
+
+Same-subset comparison (first 300 dev examples): Llama-3.2 3B base 58.7%, fine-tuned 74.0%, Haiku 4.5 71.7%, Opus 5 96.7%.
+The subset is not harder or easier by construction, but scores differ slightly from full-set numbers, so cross-model comparisons should use matching example sets.
 
 ## Repo layout
 

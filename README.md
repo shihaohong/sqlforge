@@ -2,7 +2,7 @@
 
 > **Status: work in progress.**
 > This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> Baselines and the eval harness are done; fine-tuning is in progress, and quantization, serving, and Kubernetes deployment are still ahead.
+> Baselines, the eval harness, and the QLoRA fine-tune are done; quantization, serving, and Kubernetes deployment are still ahead.
 > Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
@@ -18,7 +18,10 @@ Evaluated on the Spider 1.0 dev set with execution accuracy (the generated query
 | Llama-3.2 3B Instruct (base, zero-shot) | 61.4% (full dev) | 2.66s (local Mac) | n/a |
 | Claude Haiku 4.5 (zero-shot) | 74.0% (full dev) | 0.95s | $0.68 |
 | Claude Opus 5 (zero-shot, quality ceiling) | 96.7% (first 300) | 2.29s | $5.11 |
-| Fine-tuned 3B (QLoRA) | training in progress | - | - |
+| **Fine-tuned 3B (QLoRA, vLLM on L4)** | **72.7% (full dev)** | 1.11s | measured at M3 |
+
+The fine-tune moves the 3B model from 61.4% to 72.7% (+11.3 pts), statistically tied with Haiku 4.5 (74.0% full dev, but the fine-tune wins 74.0% vs 71.7% on a shared 300-example subset), with schema-hallucination errors cut by more than half.
+Quantization (M2) and a proper cost/latency benchmark under load (M3) come next.
 
 See [PLAN.md](PLAN.md) for the full milestone plan, decision log, and detailed results.
 
