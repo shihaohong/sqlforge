@@ -54,11 +54,15 @@ Total GPU cost for M1: roughly $4.
 
 ### M2: Quantization
 
-- [ ] Merge LoRA adapter into base weights.
-- [ ] Quantize with AWQ (and/or GPTQ) to 4-bit.
-- [ ] Re-run the eval gate: report accuracy delta vs. the merged fp16 model. Target <1-2 pts degradation.
+- [x] Merge LoRA adapter into base weights (`scripts/merge_adapter.py`). Effectively lossless: 72.6% merged bf16 vs 72.7% adapter-on-4-bit-base (one example).
+- [x] Quantize to 4-bit W4A16 with llm-compressor (`scripts/quantize.py`), calibrated on 256 in-domain SFT examples. **AWQ failed the gate**: 66.6%, a 6.0-pt drop. **GPTQ passed**: 71.2%, a 1.4-pt drop, same 2.2GB artifact (2.9x smaller than bf16), and 0.47s mean generation latency vs 1.04s bf16 (2.2x faster).
+- [x] Re-run the eval gate: report accuracy delta vs. the merged fp16 model. Target <1-2 pts degradation. GPTQ delta -1.4 pts: within target.
 
-Exit criteria: a quantized artifact with a measured, acceptable accuracy cost.
+Exit criteria: a quantized artifact with a measured, acceptable accuracy cost. **M2 complete** - `out/merged-gptq` is the serving artifact for M3.
+
+Operational notes: quantizing on the same L4 that was still running the vLLM eval server produced misleading OOMs (vLLM pins ~90% of VRAM by design) - free the GPU before calibration.
+GPTQ needed `offload_hessians=True` to fit a 24GB card, and llmcompressor 0.13's per-Linear `sequential_targets` breaks Llama graph tracing (residuals cross subgraph cuts), so granularity stays at the default decoder layer.
+A flaky SSH tunnel mid-eval also motivated transport-error retries in the eval client and a self-reconnecting tunnel loop.
 
 ### M3: Serving and benchmarks
 
@@ -90,7 +94,9 @@ Exit criteria: `pulumi up` brings up the whole stack from scratch.
 | Claude Haiku 4.5 (API baseline, zero-shot) | 74.0% (765/1034) | mean 0.95s/query | $0.68 |
 | Claude Opus 5 (quality ceiling, first 300 dev examples) | 96.7% (290/300) | mean 2.29s/query | $5.11 |
 | **Fine-tuned 3B (QLoRA adapter, vLLM on L4)** | **72.7% (752/1034)** | mean 1.11s/query (8-way concurrent) | measured at M3 |
-| Fine-tuned 3B (AWQ 4-bit, vLLM on L4) | - | - | - |
+| Fine-tuned 3B merged bf16 (vLLM on L4) | 72.6% (751/1034) | mean 1.04s/query | measured at M3 |
+| Fine-tuned 3B AWQ 4-bit (rejected: -6.0 pts) | 66.6% (689/1034) | mean 0.47s/query | n/a |
+| **Fine-tuned 3B GPTQ 4-bit (serving artifact)** | **71.2% (736/1034)** | mean 0.47s/query | measured at M3 |
 
 Same-subset comparison (first 300 dev examples): Llama-3.2 3B base 58.7%, fine-tuned 74.0%, Haiku 4.5 71.7%, Opus 5 96.7%.
 The subset is not harder or easier by construction, but scores differ slightly from full-set numbers, so cross-model comparisons should use matching example sets.

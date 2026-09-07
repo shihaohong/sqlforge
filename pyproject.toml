@@ -32,6 +32,9 @@ serve = [
     "uvicorn>=0.32",
     "prometheus-client>=0.21",
 ]
+quant = [
+    "llmcompressor>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]

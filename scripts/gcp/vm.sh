@@ -7,6 +7,8 @@
 #   scripts/gcp/vm.sh train    # launch training inside tmux
 #   scripts/gcp/vm.sh status   # tail training log
 #   scripts/gcp/vm.sh fetch    # pull the trained adapter back
+#   scripts/gcp/vm.sh start    # boot a stopped VM (keeps disk state)
+#   scripts/gcp/vm.sh stop     # stop compute billing, keep the disk
 #   scripts/gcp/vm.sh ssh      # interactive shell
 #   scripts/gcp/vm.sh delete   # tear down (stops billing)
 set -euo pipefail
@@ -61,6 +63,12 @@ case "${1:?subcommand required}" in
     gc compute scp --recurse "$VM":~/text2sql-serving/out/qlora-r16 \
       "$REPO_DIR/models/" --zone "$ZONE"
     echo "adapter in models/qlora-r16"
+    ;;
+  start)
+    gc compute instances start "$VM" --zone "$ZONE"
+    ;;
+  stop)
+    gc compute instances stop "$VM" --zone "$ZONE"
     ;;
   ssh)
     gc compute ssh "$VM" --zone "$ZONE"

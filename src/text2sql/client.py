@@ -7,8 +7,17 @@ frontier-API baseline and tracks token usage so we can report $/query.
 
 import os
 import threading
+import time
+from typing import ClassVar
 
 import httpx
+
+# Transient transport failures (a dropped SSH-tunnel connection, a server
+# restart) must not kill a 1k-example eval run; server-side 4xx/5xx still
+# raises immediately because retrying those hides real bugs.
+# Backoff totals ~30s, enough for a supervised tunnel to reconnect.
+RETRYABLE = (httpx.TransportError,)
+MAX_RETRIES = 4
 
 
 class ChatClient:
@@ -29,15 +38,20 @@ class ChatClient:
         )
 
     def complete(self, messages: list[dict], max_tokens: int = 512, temperature: float = 0.0) -> str:
-        resp = self._client.post(
-            "/chat/completions",
-            json={
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            },
-        )
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self._client.post("/chat/completions", json=payload)
+                break
+            except RETRYABLE:
+                if attempt == MAX_RETRIES:
+                    raise
+                time.sleep(2.0 * 2**attempt)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
@@ -51,7 +65,7 @@ class AnthropicClient:
     """
 
     # List prices per 1M tokens (input, output), for the cost baseline.
-    PRICES = {
+    PRICES: ClassVar[dict[str, tuple[float, float]]] = {
         "claude-opus-5": (5.00, 25.00),
         "claude-haiku-4-5": (1.00, 5.00),
         "claude-sonnet-5": (3.00, 15.00),

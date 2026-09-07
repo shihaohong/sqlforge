@@ -2,7 +2,7 @@
 
 > **Status: work in progress.**
 > This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> Baselines, the eval harness, and the QLoRA fine-tune are done; quantization, serving, and Kubernetes deployment are still ahead.
+> Baselines, the eval harness, the QLoRA fine-tune, and 4-bit quantization are done; serving, load testing, and Kubernetes deployment are still ahead.
 > Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
@@ -19,9 +19,11 @@ Evaluated on the Spider 1.0 dev set with execution accuracy (the generated query
 | Claude Haiku 4.5 (zero-shot) | 74.0% (full dev) | 0.95s | $0.68 |
 | Claude Opus 5 (zero-shot, quality ceiling) | 96.7% (first 300) | 2.29s | $5.11 |
 | **Fine-tuned 3B (QLoRA, vLLM on L4)** | **72.7% (full dev)** | 1.11s | measured at M3 |
+| **Fine-tuned 3B, GPTQ 4-bit (vLLM on L4)** | **71.2% (full dev)** | 0.47s | measured at M3 |
 
 The fine-tune moves the 3B model from 61.4% to 72.7% (+11.3 pts), statistically tied with Haiku 4.5 (74.0% full dev, but the fine-tune wins 74.0% vs 71.7% on a shared 300-example subset), with schema-hallucination errors cut by more than half.
-Quantization (M2) and a proper cost/latency benchmark under load (M3) come next.
+GPTQ 4-bit quantization keeps 71.2% (-1.4 pts) while cutting latency 2.2x and model size 2.9x; AWQ was measured too and rejected at -6.0 pts.
+A proper cost/latency benchmark under load (M3) comes next.
 
 See [PLAN.md](PLAN.md) for the full milestone plan, decision log, and detailed results.
 
@@ -106,6 +108,15 @@ scripts/gcp/vm.sh delete   # tear down (stops billing)
 ```
 
 Training checkpoints every 100 steps and auto-resumes from the latest checkpoint, so spot preemptions cost minutes, not hours.
+
+After training, produce the serving artifact on the GPU box (merge the adapter, then GPTQ-quantize to 4-bit with in-domain calibration):
+
+```bash
+uv run --group train scripts/merge_adapter.py
+uv run --group train --group quant scripts/quantize.py --method gptq
+```
+
+Make sure nothing else (like a vLLM server) holds the GPU while quantizing.
 
 ## Repository layout
 
