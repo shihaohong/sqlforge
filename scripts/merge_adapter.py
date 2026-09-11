@@ -12,6 +12,8 @@ import typer
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from text2sql.artifacts import normalize_tokenizer_config
+
 BASE_MODEL = "unsloth/Llama-3.2-3B-Instruct"
 
 
@@ -28,6 +30,7 @@ def main(
     # The adapter dir carries the tokenizer + chat template used in training.
     tokenizer = AutoTokenizer.from_pretrained(adapter_dir)
     tokenizer.save_pretrained(output_dir)
+    normalize_tokenizer_config(output_dir)
     print(f"merged model saved to {output_dir}")
 
 

@@ -32,7 +32,9 @@ def sanity(split: str = "dev", limit: int = 0):
 
 @app.command()
 def model(
-    backend: str = typer.Option(..., help="'ollama', 'vllm', or an OpenAI-compatible base URL"),
+    backend: str = typer.Option(
+        ..., help="'ollama', 'vllm', 'gateway', 'claude', or an OpenAI-compatible base URL"
+    ),
     model: str = typer.Option(...),
     split: str = "dev",
     limit: int = 0,

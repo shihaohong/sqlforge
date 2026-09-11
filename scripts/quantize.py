@@ -17,6 +17,8 @@ from datasets import Dataset
 from llmcompressor import oneshot
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from text2sql.artifacts import normalize_tokenizer_config
+
 MAX_SEQ_LENGTH = 2048
 NUM_CALIBRATION_SAMPLES = 256
 
@@ -76,6 +78,7 @@ def main(
 
     model.save_pretrained(output_dir, save_compressed=True)
     tokenizer.save_pretrained(output_dir)
+    normalize_tokenizer_config(output_dir)
     print(f"{method.upper()} model saved to {output_dir}")
 
 

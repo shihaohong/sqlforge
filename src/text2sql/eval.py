@@ -6,10 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .client import ChatClient
+from .client import SqlClient
 from .data import Example, db_path, load_split, schema_ddl
 from .execution import execute_sql, results_match
-from .prompts import build_messages, extract_sql
 
 
 @dataclass
@@ -39,7 +38,7 @@ class EvalReport:
 
 
 def generate_predictions(
-    client: ChatClient,
+    client: SqlClient,
     examples: list[Example],
     split: str,
     workers: int = 4,
@@ -50,11 +49,11 @@ def generate_predictions(
 
     def one(ex: Example) -> tuple[str, float]:
         start = time.perf_counter()
-        completion = client.complete(build_messages(schemas[ex.db_id], ex.question))
+        sql = client.predict_sql(schemas[ex.db_id], ex.question)
         latency = time.perf_counter() - start
         if on_progress:
             on_progress()
-        return extract_sql(completion), latency
+        return sql, latency
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(one, examples))

@@ -4,9 +4,9 @@ Fine-tune, quantize, and serve a small (3B) text-to-SQL model as a production-gr
 
 ## The headline this project exists to earn
 
-> Fine-tuned Llama-3.2 3B on Spider to XX% execution accuracy (base model: YY%, frontier API model: ZZ%),
-> quantized to 4-bit with <N pt accuracy loss, and self-hosted it with vLLM on a single GCP L4 GPU
-> at p99 XXX ms and ~$X.XX per 1k queries (~1/20th the cost of the API model).
+> Fine-tuned Llama-3.2 3B on Spider to 72.7% execution accuracy (base model: 61.4%, Claude Haiku 4.5: 74.0%),
+> quantized it to 4-bit for a 1.4-point accuracy cost, and self-hosted it with vLLM on a single GCP L4 GPU
+> at 20 QPS with p50 304 ms / p99 1.5 s and $0.012 per 1k queries - 59x cheaper than the cost-matched API model.
 
 Every milestone below either moves one of those numbers or makes them trustworthy.
 The project is done when the numbers are real.
@@ -27,7 +27,7 @@ client -> FastAPI gateway -> vLLM (quantized 3B, L4 GPU) -> SQL validation -> re
         (latency, tokens)                                 SELECT-only guardrail
 ```
 
-Training path: Spider train set -> QLoRA fine-tune (W&B tracked) -> merge adapter -> AWQ quantize -> eval gate -> serve.
+Training path: Spider train set -> QLoRA fine-tune (W&B tracked) -> merge adapter -> GPTQ quantize -> eval gate -> serve.
 
 ## Milestones
 
@@ -66,12 +66,41 @@ A flaky SSH tunnel mid-eval also motivated transport-error retries in the eval c
 
 ### M3: Serving and benchmarks
 
-- [ ] Serve the quantized model with vLLM on a GCP L4 spot instance.
-- [ ] FastAPI gateway: request validation, streaming, timeouts, `sqlglot` parse check and SELECT-only guardrail on outputs, Prometheus metrics.
-- [ ] Load test (k6 or locust) at increasing concurrency: p50/p99 latency, tokens/sec, max sustainable QPS.
-- [ ] Compute $/1k queries from GPU-hour price and measured throughput; compare against the API baseline's per-query cost.
+- [x] Serve the quantized model with vLLM on the L4 (`scripts/gcp/vm.sh serve`, artifact `out/merged-gptq`, served as `sqlforge-3b`).
+- [x] FastAPI gateway (`src/text2sql/gateway.py`): pydantic request validation, server-side schema lookup by `db_id`, SSE streaming, upstream timeouts (504) and errors (502), `sqlglot` parse check plus SELECT-only guardrail on every completion, Prometheus metrics, and `/healthz` / `/readyz` probes.
+  Rejected SQL is never returned in the `sql` field, so a caller can execute whatever it receives without re-validating.
+- [x] **Scored the full Spider dev set through the gateway: 71.2% (736/1034), identical to the offline GPTQ number.**
+  The production path (gateway prompt rendering + guardrails + vLLM) has no accuracy skew against the number the eval harness measured, which is the point of sharing one prompt template.
+- [x] Load test at increasing concurrency (`scripts/loadtest.py`, run on the VM against localhost): **20.4 QPS at p50 304 ms / p99 1.5 s (concurrency 8), saturating at 75 QPS / 2,450 output tokens/s (concurrency 128)**, zero errors at every level.
+- [x] Cost from GPU-hour price and measured throughput: **$0.0116 per 1k queries at concurrency 8** and $0.0031 at concurrency 128, against **$0.68 for Claude Haiku 4.5** - 59x to 220x cheaper (on-demand L4 at $0.85/hr; on spot at $0.30/hr it is $0.0041 and $0.0011).
+- [x] The gateway is free: raw vLLM measured through the same driver is within run-to-run noise at every concurrency level (p50 within 3 ms, QPS within 1%), so validation and guardrails cost nothing next to generation.
 
-Exit criteria: a benchmark table (concurrency x latency/throughput) and the cost comparison, reproducible by script.
+Exit criteria: a benchmark table (concurrency x latency/throughput) and the cost comparison, reproducible by script. **M3 complete.**
+
+Benchmark (one L4, GPTQ 4-bit 3B, 512 max output tokens, 30s per level after a 5s warmup, mean 32 output tokens/query):
+
+| Concurrency | QPS | p50 | p90 | p99 | output tok/s | $/1k queries |
+|---|---|---|---|---|---|---|
+| 1 | 3.3 | 225ms | 603ms | 1268ms | 97 | $0.0723 |
+| 2 | 6.0 | 248ms | 619ms | 1306ms | 183 | $0.0394 |
+| 4 | 11.4 | 258ms | 660ms | 1160ms | 350 | $0.0208 |
+| 8 | 20.4 | 304ms | 723ms | 1518ms | 654 | $0.0116 |
+| 16 | 35.0 | 341ms | 828ms | 1693ms | 1120 | $0.0067 |
+| 32 | 52.1 | 464ms | 1125ms | 2331ms | 1676 | $0.0045 |
+| 64 | 64.4 | 768ms | 1837ms | 3737ms | 2077 | $0.0037 |
+| 128 | 75.2 | 1371ms | 3265ms | 6648ms | 2450 | $0.0031 |
+
+Throughput scales almost linearly to concurrency 16 and then flattens as the GPU saturates, so queueing shows up as latency: from 16 to 128 concurrent clients, throughput doubles while p99 grows 4x.
+Concurrency 8-16 is the sensible operating point (p99 under 1.7s at a third of a cent per 1k queries); it is also the signal M4's autoscaler should target.
+
+A closed-loop driver rather than k6 or locust: it measures the latency a client sees at a fixed number of in-flight requests, which is how an inference service is sized, and an open-loop request rate above saturation just builds an unbounded queue and reports that as latency.
+It also counts the server-reported output tokens per request, which is what makes tokens/sec and $/query real rather than estimated.
+
+Operational notes from the run, each of which cost a debugging cycle (see [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)):
+an unpinned `vllm>=0.11` resolved to 0.19 instead of the 0.28 that M2 measured on, and the older engine silently served the same GPTQ artifact at **47.5% instead of 71.2%** - the strongest argument in this project for pinning the inference engine and re-running the eval gate against the thing that actually serves traffic.
+The resolution was not a coincidence: `llmcompressor` needs transformers 4.x and vLLM 0.28 needs 5.x, so a single lock quietly downgraded vLLM to fit both; `[tool.uv] conflicts` now forces the two groups to resolve separately.
+Model artifacts written by transformers 5.x also record `tokenizer_class: "TokenizersBackend"`, which transformers 4.x cannot load at all, so `normalize_tokenizer_config` rewrites it to `PreTrainedTokenizerFast` when an artifact is saved.
+Finally, `sqlglot` raises `TokenError` (not `ParseError`) on an unterminated quote, which the guardrail did not catch: 104 of 1034 requests returned 500 until it caught `SqlglotError` instead.
 
 ### M4: Kubernetes deployment
 
@@ -88,15 +117,15 @@ Exit criteria: `pulumi up` brings up the whole stack from scratch.
 
 ## Results
 
-| Model | Execution accuracy (Spider dev) | p99 latency | $/1k queries |
+| Model | Execution accuracy (Spider dev) | latency | $/1k queries |
 |---|---|---|---|
 | Llama-3.2 3B Instruct (base, zero-shot, ollama on M-series Mac) | 61.4% (635/1034) | mean 2.66s/query | n/a (local) |
 | Claude Haiku 4.5 (API baseline, zero-shot) | 74.0% (765/1034) | mean 0.95s/query | $0.68 |
 | Claude Opus 5 (quality ceiling, first 300 dev examples) | 96.7% (290/300) | mean 2.29s/query | $5.11 |
-| **Fine-tuned 3B (QLoRA adapter, vLLM on L4)** | **72.7% (752/1034)** | mean 1.11s/query (8-way concurrent) | measured at M3 |
-| Fine-tuned 3B merged bf16 (vLLM on L4) | 72.6% (751/1034) | mean 1.04s/query | measured at M3 |
+| **Fine-tuned 3B (QLoRA adapter, vLLM on L4)** | **72.7% (752/1034)** | mean 1.11s/query (8-way concurrent) | n/a (not the serving artifact) |
+| Fine-tuned 3B merged bf16 (vLLM on L4) | 72.6% (751/1034) | mean 1.04s/query | n/a (not the serving artifact) |
 | Fine-tuned 3B AWQ 4-bit (rejected: -6.0 pts) | 66.6% (689/1034) | mean 0.47s/query | n/a |
-| **Fine-tuned 3B GPTQ 4-bit (serving artifact)** | **71.2% (736/1034)** | mean 0.47s/query | measured at M3 |
+| **Fine-tuned 3B GPTQ 4-bit, served through the gateway** | **71.2% (736/1034)** | p50 304ms, p99 1.5s at 20 QPS | **$0.0116** |
 
 Same-subset comparison (first 300 dev examples): Llama-3.2 3B base 58.7%, fine-tuned 74.0%, Haiku 4.5 71.7%, Opus 5 96.7%.
 The subset is not harder or easier by construction, but scores differ slightly from full-set numbers, so cross-model comparisons should use matching example sets.

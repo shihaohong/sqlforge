@@ -1,8 +1,12 @@
-"""Chat completion clients for every backend this project touches.
+"""Clients for every backend this project evaluates.
 
-ChatClient speaks the OpenAI /chat/completions protocol (ollama locally,
-vLLM at M3). AnthropicClient uses the official Anthropic SDK for the
-frontier-API baseline and tracks token usage so we can report $/query.
+Each one exposes `predict_sql(schema, question) -> sql`, so the eval harness
+scores whatever is behind it without knowing the protocol: ChatClient speaks
+OpenAI /chat/completions (ollama, vLLM), AnthropicClient uses the Anthropic
+SDK for the frontier-API baseline and tracks tokens for $/query, and
+GatewayClient goes through our own gateway - which is the only backend where
+prompt construction and SQL extraction happen server-side, so scoring it
+proves the production path has no skew against the offline numbers.
 """
 
 import os
@@ -12,6 +16,8 @@ from typing import ClassVar
 
 import httpx
 
+from .prompts import build_messages, extract_sql
+
 # Transient transport failures (a dropped SSH-tunnel connection, a server
 # restart) must not kill a 1k-example eval run; server-side 4xx/5xx still
 # raises immediately because retrying those hides real bugs.
@@ -20,7 +26,21 @@ RETRYABLE = (httpx.TransportError,)
 MAX_RETRIES = 4
 
 
-class ChatClient:
+class SqlClient:
+    """Turns a chat backend into a SQL predictor.
+
+    Subclasses implement `complete`; prompt rendering and SQL extraction stay
+    here so every backend is scored through the same template.
+    """
+
+    def complete(self, messages: list[dict], max_tokens: int = 512, temperature: float = 0.0) -> str:
+        raise NotImplementedError
+
+    def predict_sql(self, schema: str, question: str) -> str:
+        return extract_sql(self.complete(build_messages(schema, question)))
+
+
+class ChatClient(SqlClient):
     def __init__(
         self,
         base_url: str,
@@ -56,7 +76,7 @@ class ChatClient:
         return resp.json()["choices"][0]["message"]["content"]
 
 
-class AnthropicClient:
+class AnthropicClient(SqlClient):
     """Claude baseline via the official Anthropic SDK.
 
     Sampling params are omitted on purpose: current Claude models reject
@@ -100,14 +120,45 @@ class AnthropicClient:
         return self.input_tokens / 1e6 * prices[0] + self.output_tokens / 1e6 * prices[1]
 
 
+class GatewayClient(SqlClient):
+    """Our FastAPI gateway: POST a question, get guardrailed SQL back.
+
+    A completion the guardrail rejected returns an empty string, which the
+    harness then scores as a failure - the same thing a caller would see.
+    """
+
+    def __init__(self, base_url: str, timeout_s: float = 120.0, max_connections: int = 8):
+        self._client = httpx.Client(
+            base_url=base_url.rstrip("/"),
+            timeout=timeout_s,
+            limits=httpx.Limits(max_connections=max_connections),
+        )
+
+    def predict_sql(self, schema: str, question: str) -> str:
+        payload = {"question": question, "schema": schema}
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self._client.post("/v1/sql", json=payload)
+                break
+            except RETRYABLE:
+                if attempt == MAX_RETRIES:
+                    raise
+                time.sleep(2.0 * 2**attempt)
+        resp.raise_for_status()
+        return resp.json()["sql"] or ""
+
+
 BACKENDS = {
     "ollama": "http://localhost:11434/v1",
     "vllm": "http://localhost:8000/v1",
+    "gateway": "http://localhost:8080",
 }
 
 
 def make_client(backend: str, model: str, api_key: str | None = None):
     if backend == "claude":
         return AnthropicClient(model=model)
+    if backend == "gateway":
+        return GatewayClient(base_url=BACKENDS["gateway"])
     base_url = BACKENDS.get(backend, backend)  # unknown backend string = literal base URL
     return ChatClient(base_url=base_url, model=model, api_key=api_key)

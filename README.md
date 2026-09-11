@@ -2,8 +2,8 @@
 
 > **Status: work in progress.**
 > This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> Baselines, the eval harness, the QLoRA fine-tune, and 4-bit quantization are done; serving, load testing, and Kubernetes deployment are still ahead.
-> Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state.
+> Baselines, the eval harness, the QLoRA fine-tune, 4-bit quantization, and the served benchmark are done; Kubernetes deployment and the writeup are still ahead.
+> Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state, and [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md) for what went wrong along the way.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
 
@@ -13,17 +13,20 @@ The core question: can a QLoRA fine-tuned Llama-3.2 3B, self-hosted on a single 
 
 Evaluated on the Spider 1.0 dev set with execution accuracy (the generated query runs against the database and returns the same rows as the gold query).
 
-| Model | Execution accuracy | Mean latency | $/1k queries |
+| Model | Execution accuracy | Latency | $/1k queries |
 |---|---|---|---|
-| Llama-3.2 3B Instruct (base, zero-shot) | 61.4% (full dev) | 2.66s (local Mac) | n/a |
-| Claude Haiku 4.5 (zero-shot) | 74.0% (full dev) | 0.95s | $0.68 |
-| Claude Opus 5 (zero-shot, quality ceiling) | 96.7% (first 300) | 2.29s | $5.11 |
-| **Fine-tuned 3B (QLoRA, vLLM on L4)** | **72.7% (full dev)** | 1.11s | measured at M3 |
-| **Fine-tuned 3B, GPTQ 4-bit (vLLM on L4)** | **71.2% (full dev)** | 0.47s | measured at M3 |
+| Llama-3.2 3B Instruct (base, zero-shot) | 61.4% (full dev) | mean 2.66s (local Mac) | n/a |
+| Claude Haiku 4.5 (zero-shot) | 74.0% (full dev) | mean 0.95s | $0.68 |
+| Claude Opus 5 (zero-shot, quality ceiling) | 96.7% (first 300) | mean 2.29s | $5.11 |
+| **Fine-tuned 3B (QLoRA, vLLM on L4)** | **72.7% (full dev)** | mean 1.11s | n/a (not the serving artifact) |
+| **Fine-tuned 3B, GPTQ 4-bit, served through the gateway** | **71.2% (full dev)** | p50 304ms, p99 1.5s at 20 QPS | **$0.0116** |
 
 The fine-tune moves the 3B model from 61.4% to 72.7% (+11.3 pts), statistically tied with Haiku 4.5 (74.0% full dev, but the fine-tune wins 74.0% vs 71.7% on a shared 300-example subset), with schema-hallucination errors cut by more than half.
 GPTQ 4-bit quantization keeps 71.2% (-1.4 pts) while cutting latency 2.2x and model size 2.9x; AWQ was measured too and rejected at -6.0 pts.
-A proper cost/latency benchmark under load (M3) comes next.
+
+Served on one L4 behind the FastAPI gateway, the quantized model scores **exactly the same 71.2%** as it does offline (736/1034 either way - the serving path adds no skew), sustains **20.4 QPS at p50 304ms / p99 1.5s**, saturates at **75 QPS / 2,450 output tokens/s**, and costs **$0.0116 per 1k queries: 59x less than Haiku 4.5** at the same accuracy within noise.
+The gateway's validation and guardrails are free - raw vLLM through the same driver is within run-to-run noise.
+Full concurrency-vs-latency table in [PLAN.md](PLAN.md).
 
 See [PLAN.md](PLAN.md) for the full milestone plan, decision log, and detailed results.
 
@@ -36,7 +39,7 @@ See [PLAN.md](PLAN.md) for the full milestone plan, decision log, and detailed r
                               |                     the same prompt template as eval/serving
                     train.py (QLoRA, L4 GPU)
                               |
-                    merge -> AWQ quantize -> eval gate
+                    merge -> GPTQ quantize -> eval gate
                               |
 client -> FastAPI gateway -> vLLM (quantized 3B) -> SQL validation -> response
 ```
@@ -52,7 +55,8 @@ Optional: [ollama](https://ollama.com) for local model baselines, `gcloud` for G
 ```bash
 uv sync                 # core + eval dependencies
 uv sync --group train   # training stack (only needed on the GPU box)
-uv sync --group serve   # serving stack (M3)
+uv sync --group serve   # gateway stack
+uv sync --group vllm    # inference engine (GPU box only)
 ```
 
 Download the Spider dataset (questions, gold SQL, and all 166 sqlite databases):
@@ -118,17 +122,65 @@ uv run --group train --group quant scripts/quantize.py --method gptq
 
 Make sure nothing else (like a vLLM server) holds the GPU while quantizing.
 
+## Serving
+
+Render the two files the serving box needs (schemas keyed by `db_id`, plus the questions the load test replays), then bring up the stack on the GPU box:
+
+```bash
+uv run scripts/build_serving_assets.py      # data/serving/dev.{schemas,questions}.json
+scripts/gcp/vm.sh setup-serve               # install vLLM + gateway deps
+scripts/gcp/vm.sh serve                     # vLLM on out/merged-gptq, port 8000
+scripts/gcp/vm.sh gateway                   # FastAPI gateway, port 8080
+scripts/gcp/vm.sh tunnel                    # forward both ports to localhost
+```
+
+Locally, the gateway runs against any OpenAI-compatible backend, including ollama:
+
+```bash
+uv run --group serve scripts/serve_gateway.py --upstream http://localhost:11434/v1 --model llama3.2:3b
+```
+
+Ask it for SQL by `db_id` (the gateway looks the schema up) or by passing a `schema` string:
+
+```bash
+curl -s localhost:8080/v1/sql -H 'content-type: application/json' \
+  -d '{"question":"How many singers are there?","db_id":"concert_singer"}'
+# {"sql":"SELECT count(*) FROM singer","valid":true,...}
+```
+
+Every completion is parsed with `sqlglot` and checked to be a single read-only SELECT; a rejected query is returned as `rejected_sql` with `valid: false`, never as `sql`.
+`POST /v1/sql/stream` streams token deltas as server-sent events and ends with a `done` event carrying the same verdict.
+`/healthz` is liveness, `/readyz` checks that the model server answers, and `/metrics` exposes request/rejection/token counters and latency histograms for Prometheus.
+
+Scoring the served path is one command, and it should reproduce the offline accuracy exactly:
+
+```bash
+uv run scripts/run_eval.py model --backend gateway --model sqlforge-3b --split dev --workers 8
+```
+
+## Benchmarking
+
+The load test sweeps concurrency levels in closed loop and reports p50/p90/p99, throughput, output tokens/sec, and $/1k queries from the GPU-hour price.
+Run it on the serving box - driving it through an SSH tunnel measures the tunnel:
+
+```bash
+scripts/gcp/vm.sh bench --target gateway --concurrency 1,2,4,8,16,32,64,128 --duration 30
+scripts/gcp/vm.sh bench --target vllm                     # same load, bypassing the gateway
+scripts/gcp/vm.sh results                                 # pull runs/loadtest-*.json back
+```
+
 ## Repository layout
 
 ```
-src/text2sql/   library: data loading, prompt template, SQL execution, eval, model clients
-scripts/        entrypoints: run_eval.py, build_train_data.py, train.py, gcp/vm.sh
-tests/          unit tests for the eval harness (SQL extraction, result comparison)
-configs/        training and serving configs
-deploy/         infrastructure-as-code (M4)
-data/           datasets and rendered SFT files (gitignored)
-runs/           eval outputs: per-example jsonl + summary json per run
-PLAN.md         milestone plan, decision log, detailed results
+src/text2sql/       library: data loading, prompt template, SQL execution, eval, clients, gateway, guardrails
+scripts/            entrypoints: run_eval.py, train.py, quantize.py, serve_gateway.py, loadtest.py, gcp/vm.sh
+tests/              unit tests: eval harness, SQL guardrails, gateway (mocked vLLM upstream)
+configs/            training and serving configs
+deploy/             infrastructure-as-code (M4)
+data/               datasets, rendered SFT files, serving assets (gitignored)
+runs/               eval outputs (per-example jsonl + summary json) and load-test results
+PLAN.md             milestone plan, decision log, detailed results
+FUTURE_LEARNINGS.md what broke and what to do differently next time
 ```
 
 ## Development

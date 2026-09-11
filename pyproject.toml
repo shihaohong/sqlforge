@@ -17,6 +17,8 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.8",
+    # the gateway tests exercise the real FastAPI app
+    { include-group = "serve" },
 ]
 train = [
     "torch>=2.5",
@@ -34,6 +36,24 @@ serve = [
 ]
 quant = [
     "llmcompressor>=0.6",
+]
+# The inference engine, installed only on the GPU box: the wheels are
+# linux-only, and a marker keeps macOS resolution (where we develop) clean.
+# Pinned to the minor that produced the M2 accuracy numbers - serving an
+# unpinned engine silently cost 24 points of execution accuracy once.
+vllm = [
+    "vllm>=0.28,<0.29; sys_platform == 'linux'",
+]
+
+# Quantization and serving can never share one environment: llmcompressor
+# needs transformers 4.x, vLLM 0.28 needs 5.x. Declaring the conflict makes
+# uv resolve each group separately and fail loudly on `uv sync --group quant
+# --group vllm`, instead of quietly downgrading vLLM to a version that fits
+# both - which is what silently cost 24 points of execution accuracy. The two
+# steps already run at different times: vLLM pins the whole GPU while it runs.
+[tool.uv]
+conflicts = [
+    [{ group = "quant" }, { group = "vllm" }],
 ]
 
 [build-system]
