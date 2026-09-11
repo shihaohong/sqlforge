@@ -1,0 +1,67 @@
+# The accuracy gate: real questions, real endpoint, compared to a recorded
+# baseline (runs/eval-baseline.json).
+#
+# Deliberately not run on every push. It needs the Spider dataset and a live
+# deployment with a GPU behind it, so it runs on demand and automatically only
+# when something that can move the score changes - the prompt, the harness,
+# the guardrail, the serving code, or the pinned engine.
+name: eval-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: number of dev examples to score
+        default: "200"
+  pull_request:
+    paths:
+      - src/text2sql/prompts.py
+      - src/text2sql/eval.py
+      - src/text2sql/execution.py
+      - src/text2sql/guardrails.py
+      - src/text2sql/gateway.py
+      - scripts/eval_gate.py
+      - pyproject.toml
+      - uv.lock
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Skips silently rather than failing when the deployment is torn down: the
+    # cluster is not always up, and a red X for "no GPU running today" would
+    # train people to ignore this check.
+    if: vars.SQLFORGE_GATEWAY_URL != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      # Spider is ~1GB and not in the repo; cache it so the gate costs one
+      # download rather than one per run.
+      - name: cache the dataset
+        id: spider
+        uses: actions/cache@v4
+        with:
+          path: data/spider_data
+          key: spider-2024-release
+      - name: download the dataset
+        if: steps.spider.outputs.cache-hit != 'true'
+        run: |
+          uvx gdown 1403EGqzIDoHMdQF4c9Bkyl7dZLZ5Wt6J -O /tmp/spider_data.zip
+          unzip -q /tmp/spider_data.zip -d data
+      - name: the harness must score gold-vs-gold at 100% first
+        # If this fails, no other number in the run means anything.
+        run: uv run scripts/run_eval.py sanity --split dev --limit 200
+
+      - name: eval gate
+        env:
+          SQLFORGE_GATEWAY_URL: ${{ vars.SQLFORGE_GATEWAY_URL }}
+          # The service token is exempt from the public rate limits, which a
+          # 200-example run at eight-way concurrency needs to be.
+          SQLFORGE_TOKEN: ${{ secrets.SQLFORGE_SERVICE_TOKEN }}
+        run: |
+          uv run scripts/eval_gate.py \
+            --backend gateway \
+            --limit ${{ inputs.limit || '200' }}

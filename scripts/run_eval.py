@@ -49,7 +49,10 @@ def model(
     with Progress(console=console) as progress:
         task = progress.add_task(f"generating ({model})", total=len(examples))
         preds = generate_predictions(
-            client, examples, split, workers=workers,
+            client,
+            examples,
+            split,
+            workers=workers,
             on_progress=lambda: progress.advance(task),
         )
 
@@ -63,7 +66,11 @@ def model(
         cost = client.cost_usd()
         console.print(
             f"tokens: {client.input_tokens} in / {client.output_tokens} out"
-            + (f", cost: ${cost:.2f} (${cost / len(examples) * 1000:.2f}/1k queries)" if cost else "")
+            + (
+                f", cost: ${cost:.2f} (${cost / len(examples) * 1000:.2f}/1k queries)"
+                if cost
+                else ""
+            )
         )
     console.print(f"saved: {path}")
 

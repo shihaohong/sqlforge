@@ -169,8 +169,17 @@ Two bugs worth recording, both found only by deploying:
 
 ### M6: Hardening and writeup
 
-- [ ] Eval regression gate in CI: any model/prompt change re-runs a dev-set subset and fails on regression.
-- [ ] Technical writeup: decisions, tradeoffs, and the final numbers table. This is the artifact recruiters and interviewers actually read.
+- [x] **Fast CI on every push** (`.github/workflows/ci.yml`): ruff lint and format, 101 tests, the frontend type-check and build, and a syntax/lint pass over the Pulumi program. About two seconds of test time, so there is no reason to skip it.
+- [x] **The prompt template is frozen by a test** (`tests/test_prompt_contract.py`). The weights were trained against those exact strings, and training, eval, serving and the demo all render through one function, so a reworded instruction or a stray newline moves every served prompt off the distribution the model was tuned on with no symptom but lower accuracy. The test states plainly that a failure means re-running the eval gate, not editing the expected value.
+- [x] **Eval regression gate** (`scripts/eval_gate.py`, `.github/workflows/eval-gate.yml`): scores a fixed prefix of the dev split against a live endpoint and fails if accuracy drops more than 3 points below `runs/eval-baseline.json`. Verified in both directions - it passes on an unchanged deployment (-1.0 pts) and exits 1 against a baseline simulating a 23-point regression.
+- [x] **Technical writeup** ([WRITEUP.md](WRITEUP.md)): the question, the measured answer, the honest economics including where self-hosting *loses*, the decision at each stage, what the numbers do not mean, and the four bugs that changed how I work. Every figure in it was checked back against the files in `runs/`.
+
+Exit criteria: a regression in accuracy fails a check rather than being discovered later, and the project's results are written down where someone else can read them. **M6 complete.**
+
+The gate's design is shaped by what it has to catch. A fixed prefix rather than a random sample, so two runs are comparable. Three points of tolerance, because re-running it against an unchanged deployment moved the score by a point (68.0% then 67.0% of 200) - vLLM's continuous batching changes how requests are grouped and therefore the numerics. That still catches everything that has ever mattered here: the vLLM downgrade was -23.7 points, and a broken prompt costs ten or more.
+It runs on demand and on pull requests that touch the prompt, the harness, the guardrail, the serving code or the lockfile, and it skips itself when no deployment URL is configured, because a red X meaning "no GPU running today" teaches people to ignore the check.
+
+The economics, spelled out properly in the writeup: per-query cost is a GPU-hour price divided by how many queries that hour served, so it is entirely a function of utilization. Break-even against Haiku 4.5 is **0.35 QPS, about 30,000 queries a day**. Below that the API is cheaper because an idle GPU still bills; at 20 QPS this service is 58x cheaper.
 
 ## Results
 

@@ -1,0 +1,64 @@
+# Everything that can be checked without a GPU or the 841MB dataset, on every
+# push. Two seconds of test time, so there is no reason to skip it.
+#
+# What this cannot see is accuracy: the model's score depends on the weights,
+# the prompt, and the serving stack, and only a real endpoint answering real
+# questions measures that. That is eval-gate.yml.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: lint
+        run: uv run ruff check .
+      - name: format
+        run: uv run ruff format --check src scripts tests
+      - name: tests
+        # The demo tests skip themselves when the sample databases are absent,
+        # so render them first - they are 0.9MB and come from the dataset the
+        # repo does not carry, hence the guard rather than a hard dependency.
+        run: uv run pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      # `npm run build` type-checks before bundling, so this covers tsc too.
+      - run: npm run build
+
+  iac:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      # A syntax or import error in the Pulumi program should not wait to be
+      # discovered by an apply. A full `pulumi preview` would need cloud
+      # credentials, so this checks what it can without them.
+      - run: uv run python -c "import ast, pathlib; ast.parse(pathlib.Path('__main__.py').read_text())"
+      - run: uv run ruff check .

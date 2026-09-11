@@ -2,7 +2,8 @@
 
 > **Status: work in progress.**
 > This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> Baselines, the eval harness, the QLoRA fine-tune, 4-bit quantization, the served benchmark, the Kubernetes deployment, and an interactive demo are done; CI regression gating and the writeup are still ahead.
+> All six milestones are complete: baselines and eval harness, QLoRA fine-tune, 4-bit quantization, serving and benchmarks, Kubernetes deployment, an interactive demo, and CI regression gating with a written-up result.
+> Start with [WRITEUP.md](WRITEUP.md) for what was built and what it measured.
 > Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state, and [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md) for what went wrong along the way.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
@@ -244,12 +245,25 @@ web/                the demo page (Vite + React + Tailwind) and its Playwright t
 data/               datasets, rendered SFT files, serving assets (gitignored)
 runs/               eval outputs (per-example jsonl + summary json) and load-test results
 PLAN.md             milestone plan, decision log, detailed results
+WRITEUP.md          the technical writeup: question, results, economics, tradeoffs
 FUTURE_LEARNINGS.md what broke and what to do differently next time
 ```
 
 ## Development
 
 ```bash
-uv run pytest -q        # harness unit tests
-uv run ruff check .     # lint
+uv run pytest -q                                  # 101 tests
+uv run ruff check . && uv run ruff format --check src scripts tests
+cd web && npm run build                           # type-check + bundle the demo
 ```
+
+Those are exactly what CI runs on every push.
+Accuracy is not something CI can check without a GPU, so it has its own gate against a live endpoint:
+
+```bash
+SQLFORGE_GATEWAY_URL=https://<host> SQLFORGE_TOKEN=<service-token> \
+  uv run scripts/eval_gate.py --limit 200
+```
+
+It scores a fixed prefix of the dev split and fails if accuracy falls more than 3 points below `runs/eval-baseline.json`.
+Re-record the baseline with `--update-baseline` only when a change is intended and understood.

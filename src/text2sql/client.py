@@ -33,7 +33,9 @@ class SqlClient:
     here so every backend is scored through the same template.
     """
 
-    def complete(self, messages: list[dict], max_tokens: int = 512, temperature: float = 0.0) -> str:
+    def complete(
+        self, messages: list[dict], max_tokens: int = 512, temperature: float = 0.0
+    ) -> str:
         raise NotImplementedError
 
     def predict_sql(self, schema: str, question: str) -> str:
@@ -53,11 +55,15 @@ class ChatClient(SqlClient):
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=timeout_s,
-            headers={"Authorization": f"Bearer {api_key or os.environ.get('OPENAI_API_KEY', 'none')}"},
+            headers={
+                "Authorization": f"Bearer {api_key or os.environ.get('OPENAI_API_KEY', 'none')}"
+            },
             limits=httpx.Limits(max_connections=max_connections),
         )
 
-    def complete(self, messages: list[dict], max_tokens: int = 512, temperature: float = 0.0) -> str:
+    def complete(
+        self, messages: list[dict], max_tokens: int = 512, temperature: float = 0.0
+    ) -> str:
         payload = {
             "model": self.model,
             "messages": messages,
@@ -100,7 +106,9 @@ class AnthropicClient(SqlClient):
         self.input_tokens = 0
         self.output_tokens = 0
 
-    def complete(self, messages: list[dict], max_tokens: int = 2048, temperature: float = 0.0) -> str:
+    def complete(
+        self, messages: list[dict], max_tokens: int = 2048, temperature: float = 0.0
+    ) -> str:
         return self.complete_with_usage(messages, max_tokens)[0]
 
     def complete_with_usage(
@@ -146,11 +154,22 @@ class GatewayClient(SqlClient):
     harness then scores as a failure - the same thing a caller would see.
     """
 
-    def __init__(self, base_url: str, timeout_s: float = 120.0, max_connections: int = 8):
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        timeout_s: float = 120.0,
+        max_connections: int = 8,
+    ):
+        # The deployed gateway meters every caller; the service token is the
+        # credential that is exempt from rate limits, which an eval run of a
+        # thousand examples at eight-way concurrency needs to be.
+        token = token if token is not None else os.environ.get("SQLFORGE_TOKEN", "")
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
             timeout=timeout_s,
             limits=httpx.Limits(max_connections=max_connections),
+            headers={"X-Demo-Token": token} if token else {},
         )
 
     def predict_sql(self, schema: str, question: str) -> str:
@@ -178,6 +197,8 @@ def make_client(backend: str, model: str, api_key: str | None = None):
     if backend == "claude":
         return AnthropicClient(model=model)
     if backend == "gateway":
-        return GatewayClient(base_url=BACKENDS["gateway"])
+        # SQLFORGE_GATEWAY_URL points the harness at a deployed gateway
+        # instead of a local one, which is how CI scores the real thing.
+        return GatewayClient(base_url=os.environ.get("SQLFORGE_GATEWAY_URL", BACKENDS["gateway"]))
     base_url = BACKENDS.get(backend, backend)  # unknown backend string = literal base URL
     return ChatClient(base_url=base_url, model=model, api_key=api_key)

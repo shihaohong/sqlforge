@@ -92,25 +92,19 @@ class Settings:
             max_tokens=int(os.environ.get("SQLFORGE_MAX_TOKENS", cls.max_tokens)),
             schema_cache=Path(os.environ.get("SQLFORGE_SCHEMA_CACHE", cls.schema_cache)),
             databases_dir=Path(os.environ.get("SQLFORGE_DATABASES_DIR", cls.databases_dir)),
-            questions_cache=Path(
-                os.environ.get("SQLFORGE_QUESTIONS_CACHE", cls.questions_cache)
-            ),
+            questions_cache=Path(os.environ.get("SQLFORGE_QUESTIONS_CACHE", cls.questions_cache)),
             static_dir=Path(os.environ.get("SQLFORGE_STATIC_DIR", cls.static_dir)),
             demo_token=os.environ.get("SQLFORGE_DEMO_TOKEN", cls.demo_token),
             service_token=os.environ.get("SQLFORGE_SERVICE_TOKEN", cls.service_token),
             claude_model=os.environ.get("SQLFORGE_CLAUDE_MODEL", cls.claude_model),
-            rate_per_minute=float(
-                os.environ.get("SQLFORGE_RATE_PER_MINUTE", cls.rate_per_minute)
-            ),
+            rate_per_minute=float(os.environ.get("SQLFORGE_RATE_PER_MINUTE", cls.rate_per_minute)),
             rate_burst=int(os.environ.get("SQLFORGE_RATE_BURST", cls.rate_burst)),
             daily_limit=int(os.environ.get("SQLFORGE_DAILY_LIMIT", cls.daily_limit)),
             paid_rate_per_minute=float(
                 os.environ.get("SQLFORGE_PAID_RATE_PER_MINUTE", cls.paid_rate_per_minute)
             ),
             paid_burst=int(os.environ.get("SQLFORGE_PAID_BURST", cls.paid_burst)),
-            paid_daily_limit=int(
-                os.environ.get("SQLFORGE_PAID_DAILY_LIMIT", cls.paid_daily_limit)
-            ),
+            paid_daily_limit=int(os.environ.get("SQLFORGE_PAID_DAILY_LIMIT", cls.paid_daily_limit)),
         )
 
 
