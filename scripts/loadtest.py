@@ -34,6 +34,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNS_DIR = REPO_ROOT / "runs"
 SERVING_DIR = REPO_ROOT / "data" / "serving"
 
+# Markers around the stdout form of the result, so a caller can lift the json
+# out of a log that also contains progress lines and a rich table.
+RESULT_BEGIN = "--- sqlforge-loadtest-json-begin ---"
+RESULT_END = "--- sqlforge-loadtest-json-end ---"
+
 app = typer.Typer(add_completion=False)
 # Fixed width so the table renders identically to a terminal and to a log
 # file (rich falls back to 80 columns when stdout is not a tty, which
@@ -217,6 +222,9 @@ def main(
         0.85, help="GPU-hour price used for $/1k queries (g2-standard-8 on-demand)"
     ),
     run_name: str = typer.Option(""),
+    out_dir: str = typer.Option(
+        str(RUNS_DIR), help="where to write the result json; '-' prints it to stdout instead"
+    ),
 ) -> None:
     """Sweep concurrency levels and report latency, throughput, and cost."""
     default_url, build = TARGETS.get(target, (target, gateway_request))
@@ -261,23 +269,28 @@ def main(
         f"({best.qps:.1f} QPS, p99 {best.p99_ms:.0f}ms)"
     )
 
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = RUNS_DIR / f"{run_name}.json"
-    out_path.write_text(
-        json.dumps(
-            {
-                "target": target,
-                "base_url": url,
-                "split": split,
-                "duration_s": duration,
-                "warmup_s": warmup,
-                "max_tokens": max_tokens,
-                "gpu_hourly_usd": gpu_hourly,
-                "levels": [asdict(r) for r in results],
-            },
-            indent=2,
-        )
-    )
+    payload = {
+        "target": target,
+        "base_url": url,
+        "split": split,
+        "duration_s": duration,
+        "warmup_s": warmup,
+        "max_tokens": max_tokens,
+        "gpu_hourly_usd": gpu_hourly,
+        "levels": [asdict(r) for r in results],
+    }
+    # '-' emits the result to stdout between markers instead of writing a
+    # file, which is how the in-cluster run gets its results out: the pod is
+    # deleted when the benchmark ends, and its image has no writable /app.
+    if out_dir == "-":
+        print(RESULT_BEGIN)
+        print(json.dumps(payload, indent=2))
+        print(RESULT_END)
+        return
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    out_path = out_path / f"{run_name}.json"
+    out_path.write_text(json.dumps(payload, indent=2))
     console.print(f"saved: {out_path}")
 
 

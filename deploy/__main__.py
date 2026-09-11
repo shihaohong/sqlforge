@@ -91,7 +91,11 @@ system_pool = gcp.container.NodePool(
     autoscaling=gcp.container.NodePoolAutoscalingArgs(min_node_count=1, max_node_count=3),
     management=gcp.container.NodePoolManagementArgs(auto_repair=True, auto_upgrade=True),
     node_config=gcp.container.NodePoolNodeConfigArgs(
-        machine_type="e2-standard-2",
+        # 4 vCPU, not 2: the gateway tier plus the benchmark driver on a
+        # 2-vCPU node contend for the same cores, and measured throughput
+        # collapses above ~64 concurrent clients for reasons that have
+        # nothing to do with the model or the GPU.
+        machine_type="e2-standard-4",
         disk_size_gb=50,
         disk_type="pd-balanced",
         oauth_scopes=["https://www.googleapis.com/auth/cloud-platform"],
