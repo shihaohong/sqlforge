@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+/* Data-viz roles, taken from the validated dark palette rather than picked by
+   eye: slot 1 (blue) is the self-hosted model, slot 2 (orange) is the API
+   model, and the status pair is reserved for the correctness verdict - which
+   always ships with an icon and a label, never color alone. */
+@theme {
+  --color-surface-1: #1a1a19;
+  --color-surface-2: #232322;
+  --color-surface-3: #2e2e2c;
+  --color-ink: #ffffff;
+  --color-ink-secondary: #c3c2b7;
+  --color-ink-muted: #8b8a80;
+  --color-series-local: #3987e5;
+  --color-series-api: #d95926;
+  --color-status-good: #0ca30c;
+  --color-status-critical: #d03b3b;
+}
+
+html {
+  color-scheme: dark;
+  background-color: var(--color-surface-1);
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface-1);
+  color: var(--color-ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}

@@ -23,11 +23,14 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel, Field, model_validator
 
+from .demo import DemoAssets, demo_router
 from .guardrails import check_sql
 from .prompts import build_messages, extract_sql
+from .security import SERVICE, RateLimiter, authenticate, client_ip
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,6 +50,8 @@ UPSTREAM_LATENCY = Histogram(
     buckets=(0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 30.0),
 )
 INFLIGHT = Gauge("sqlforge_inflight_requests", "Requests currently in flight.")
+# A spike here means the token leaked or someone is scraping the demo.
+DENIED = Counter("sqlforge_denied_total", "Requests refused by token or rate limit.", ["reason"])
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,25 @@ class Settings:
     max_tokens: int = 512
     #: db_id -> CREATE TABLE DDL, so the serving box needs no sqlite files.
     schema_cache: Path = REPO_ROOT / "data" / "serving" / "dev.schemas.json"
+    #: Sample databases and questions/gold SQL behind the demo endpoints.
+    databases_dir: Path = REPO_ROOT / "data" / "serving" / "databases"
+    questions_cache: Path = REPO_ROOT / "data" / "serving" / "dev.questions.json"
+    #: Built single-page app; served at / when the directory exists.
+    static_dir: Path = REPO_ROOT / "web" / "dist"
+    #: Shared secret for the demo endpoints. Empty means open, which is right
+    #: for local development and never right on a public address.
+    demo_token: str = ""
+    #: Exempt from rate limits: the eval harness and the load generator.
+    service_token: str = ""
+    claude_model: str = "claude-haiku-4-5"
+    #: Rate limits are per replica; see security.py.
+    rate_per_minute: float = 12.0
+    rate_burst: int = 6
+    daily_limit: int = 2000
+    #: The Claude path spends money per call, so it gets its own small budget.
+    paid_rate_per_minute: float = 4.0
+    paid_burst: int = 2
+    paid_daily_limit: int = 200
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -67,6 +91,26 @@ class Settings:
             timeout_s=float(os.environ.get("SQLFORGE_TIMEOUT_S", cls.timeout_s)),
             max_tokens=int(os.environ.get("SQLFORGE_MAX_TOKENS", cls.max_tokens)),
             schema_cache=Path(os.environ.get("SQLFORGE_SCHEMA_CACHE", cls.schema_cache)),
+            databases_dir=Path(os.environ.get("SQLFORGE_DATABASES_DIR", cls.databases_dir)),
+            questions_cache=Path(
+                os.environ.get("SQLFORGE_QUESTIONS_CACHE", cls.questions_cache)
+            ),
+            static_dir=Path(os.environ.get("SQLFORGE_STATIC_DIR", cls.static_dir)),
+            demo_token=os.environ.get("SQLFORGE_DEMO_TOKEN", cls.demo_token),
+            service_token=os.environ.get("SQLFORGE_SERVICE_TOKEN", cls.service_token),
+            claude_model=os.environ.get("SQLFORGE_CLAUDE_MODEL", cls.claude_model),
+            rate_per_minute=float(
+                os.environ.get("SQLFORGE_RATE_PER_MINUTE", cls.rate_per_minute)
+            ),
+            rate_burst=int(os.environ.get("SQLFORGE_RATE_BURST", cls.rate_burst)),
+            daily_limit=int(os.environ.get("SQLFORGE_DAILY_LIMIT", cls.daily_limit)),
+            paid_rate_per_minute=float(
+                os.environ.get("SQLFORGE_PAID_RATE_PER_MINUTE", cls.paid_rate_per_minute)
+            ),
+            paid_burst=int(os.environ.get("SQLFORGE_PAID_BURST", cls.paid_burst)),
+            paid_daily_limit=int(
+                os.environ.get("SQLFORGE_PAID_DAILY_LIMIT", cls.paid_daily_limit)
+            ),
         )
 
 
@@ -153,8 +197,69 @@ async def lifespan(app: FastAPI):
 def create_app(settings: Settings | None = None, upstream: httpx.AsyncClient | None = None):
     app = FastAPI(title="SQLForge gateway", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings or Settings.from_env()
+    settings = app.state.settings
     if upstream is not None:  # tests inject a mock transport
         app.state.upstream = upstream
+
+    limiter = RateLimiter(
+        rate_per_minute=settings.rate_per_minute,
+        burst=settings.rate_burst,
+        daily_limit=settings.daily_limit,
+        name="requests",
+    )
+    paid_limiter = RateLimiter(
+        rate_per_minute=settings.paid_rate_per_minute,
+        burst=settings.paid_burst,
+        daily_limit=settings.paid_daily_limit,
+        name="comparisons",
+    )
+
+    def guard(request: Request, paid: bool = False) -> str:
+        """Authenticate and charge rate limits. Every inference route calls it.
+
+        Inference costs GPU seconds and the comparison costs money, so the
+        public routes are all metered; a service token skips the meter.
+        """
+        try:
+            principal = authenticate(request, settings.demo_token, settings.service_token)
+        except HTTPException:
+            DENIED.labels("unauthorized").inc()
+            raise
+        if principal == SERVICE:
+            return principal
+        key = client_ip(request)
+        try:
+            limiter.check(key)
+            if paid:
+                paid_limiter.check(key)
+        except HTTPException:
+            DENIED.labels("paid_rate_limit" if paid else "rate_limit").inc()
+            raise
+        return principal
+
+    def claude_factory():
+        """The Claude client, or None when this deployment cannot authenticate.
+
+        Constructing the SDK succeeds with no credentials at all - it only
+        fails when a request is made - so availability is established with
+        `models.list()`, a metadata call that costs nothing and generates no
+        tokens. The answer is cached: it will not change while the process
+        lives, and the demo page asks on every load.
+        """
+        import anthropic
+
+        if not hasattr(app.state, "claude"):
+            from .client import AnthropicClient
+
+            client = AnthropicClient(model=settings.claude_model)
+            try:
+                client._client.models.list(limit=1)
+            except anthropic.AnthropicError as e:
+                console_hint = "set ANTHROPIC_API_KEY for the comparison"
+                print(f"claude comparison disabled: {type(e).__name__}; {console_hint}")
+                client = None
+            app.state.claude = client
+        return app.state.claude
 
     def resolve_schema(app: FastAPI, req: SqlRequest) -> str:
         return req.schema_ddl if req.schema_ddl else app.state.schemas.get(req.db_id)
@@ -172,6 +277,7 @@ def create_app(settings: Settings | None = None, upstream: httpx.AsyncClient | N
 
     @app.post("/v1/sql", response_model=SqlResponse)
     async def generate_sql(req: SqlRequest, request: Request) -> SqlResponse:
+        guard(request)
         started = time.perf_counter()
         schema = resolve_schema(request.app, req)
         with INFLIGHT.track_inprogress():
@@ -224,6 +330,7 @@ def create_app(settings: Settings | None = None, upstream: httpx.AsyncClient | N
         on deltas must wait for the `done` event before trusting the query,
         which is what `valid` in that event is for.
         """
+        guard(request)
         schema = resolve_schema(request.app, req)
 
         async def events() -> AsyncIterator[str]:
@@ -304,9 +411,26 @@ def create_app(settings: Settings | None = None, upstream: httpx.AsyncClient | N
             raise HTTPException(503, f"model server not ready: {e}") from e
         return {"status": "ready", "models": [m["id"] for m in resp.json().get("data", [])]}
 
+    app.include_router(
+        demo_router(
+            DemoAssets(
+                databases_dir=settings.databases_dir, questions_path=settings.questions_cache
+            ),
+            SchemaRegistry(settings.schema_cache),
+            claude_factory,
+            guard,
+        )
+    )
+
     @app.get("/metrics")
     async def metrics() -> PlainTextResponse:
         return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    # Mounted last so it cannot shadow an API route, and only when a build
+    # exists: the API is useful on its own and must not depend on `npm run
+    # build` having been run.
+    if settings.static_dir.is_dir():
+        app.mount("/", StaticFiles(directory=settings.static_dir, html=True), name="web")
 
     return app
 

@@ -5,6 +5,20 @@
 # rendered schema cache):
 #   gcloud builds submit --config deploy/cloudbuild.yaml .
 
+# The demo page is built here rather than committed as a dist/ directory, so
+# the served assets always match the source in this commit.
+FROM node:22-slim AS web
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/tsconfig.json web/vite.config.ts web/index.html ./
+COPY web/src ./src
+# `npm run build` type-checks first, so a type error fails the image build
+# rather than shipping a broken page.
+RUN npm run build
+
+
 FROM python:3.12-slim AS builder
 
 # Pinned uv, copied from its own distroless image: no curl-to-shell install,
@@ -44,6 +58,8 @@ COPY --from=builder --chown=app:app /app /app
 # scripts/build_serving_assets.py. Baked in rather than mounted: the schemas
 # the gateway serves are versioned with the app that was evaluated on them.
 COPY --chown=app:app data/serving/ /app/data/serving/
+
+COPY --from=web --chown=app:app /web/dist /app/web/dist
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

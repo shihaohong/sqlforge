@@ -28,3 +28,10 @@ runs/*.jsonl
 
 # Pulumi: state lives in GCS, and the local venv/lock for the IaC program
 deploy/.venv/
+
+# Frontend build output and test artifacts (the image builds the page itself)
+web/node_modules/
+web/dist/
+web/screenshots/
+web/test-results/
+web/playwright-report/

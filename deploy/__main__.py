@@ -38,6 +38,16 @@ VLLM_REPLICAS = config.require_int("vllmReplicas")
 GATEWAY_MIN_REPLICAS = config.require_int("gatewayMinReplicas")
 GATEWAY_MAX_REPLICAS = config.require_int("gatewayMaxReplicas")
 
+# Public exposure is opt-in: with expose=false the gateway stays a ClusterIP
+# and the demo is reachable only through `kubectl port-forward`.
+EXPOSE_PUBLICLY = config.get_bool("expose") or False
+# Secrets, so they are encrypted in the stack state rather than sitting in a
+# config file. The Anthropic key is optional - without it the page serves the
+# local model alone and says the comparison is switched off.
+DEMO_TOKEN = config.require_secret("demoToken")
+SERVICE_TOKEN = config.require_secret("serviceToken")
+ANTHROPIC_API_KEY = config.get_secret("anthropicApiKey")
+
 # The model is served under this name; clients and the gateway both use it.
 SERVED_MODEL_NAME = "sqlforge-3b"
 VLLM_IMAGE = "vllm/vllm-openai:v0.28.0"
@@ -399,6 +409,20 @@ vllm_service = k8s.core.v1.Service(
 
 gateway_labels = {"app": "gateway"}
 
+# One Secret for everything the gateway must not carry in its manifest. The
+# Anthropic key is written as an empty string when unset so the container's
+# env wiring does not have to branch.
+gateway_secret = k8s.core.v1.Secret(
+    "gateway",
+    metadata={"name": "gateway", "namespace": NAMESPACE},
+    string_data={
+        "demo-token": DEMO_TOKEN,
+        "service-token": SERVICE_TOKEN,
+        "anthropic-api-key": ANTHROPIC_API_KEY if ANTHROPIC_API_KEY is not None else "",
+    },
+    opts=ns_opts,
+)
+
 gateway = k8s.apps.v1.Deployment(
     "gateway",
     metadata={"name": "gateway", "namespace": NAMESPACE},
@@ -434,6 +458,38 @@ gateway = k8s.apps.v1.Deployment(
                             },
                             {"name": "SQLFORGE_MODEL", "value": SERVED_MODEL_NAME},
                             {"name": "SQLFORGE_TIMEOUT_S", "value": "30"},
+                            # Public rate limits, applied per replica (see
+                            # security.py): a demo visitor gets a handful of
+                            # queries a minute, and the paid comparison gets
+                            # a much smaller allowance because every call
+                            # costs money.
+                            {"name": "SQLFORGE_RATE_PER_MINUTE", "value": "12"},
+                            {"name": "SQLFORGE_RATE_BURST", "value": "6"},
+                            {"name": "SQLFORGE_DAILY_LIMIT", "value": "2000"},
+                            {"name": "SQLFORGE_PAID_RATE_PER_MINUTE", "value": "4"},
+                            {"name": "SQLFORGE_PAID_BURST", "value": "2"},
+                            {"name": "SQLFORGE_PAID_DAILY_LIMIT", "value": "200"},
+                            {
+                                "name": "SQLFORGE_DEMO_TOKEN",
+                                "value_from": {
+                                    "secret_key_ref": {"name": "gateway", "key": "demo-token"}
+                                },
+                            },
+                            {
+                                "name": "SQLFORGE_SERVICE_TOKEN",
+                                "value_from": {
+                                    "secret_key_ref": {"name": "gateway", "key": "service-token"}
+                                },
+                            },
+                            {
+                                "name": "ANTHROPIC_API_KEY",
+                                "value_from": {
+                                    "secret_key_ref": {
+                                        "name": "gateway",
+                                        "key": "anthropic-api-key",
+                                    }
+                                },
+                            },
                         ],
                         # The CPU request is what the HPA measures against, and
                         # the guardrail's sqlglot parse is the real CPU cost
@@ -473,17 +529,23 @@ gateway = k8s.apps.v1.Deployment(
         # Ordered after vLLM because the gateway's readiness probe checks the
         # model server: deploying it first would just mean a tier of NotReady
         # pods while the GPU node comes up.
-        depends_on=[namespace, vllm_service, vllm],
+        depends_on=[namespace, vllm_service, vllm, gateway_secret],
         custom_timeouts=pulumi.CustomTimeouts(create="15m", update="15m"),
     ),
 )
 
+# A network load balancer when exposed: the demo token and the rate limits are
+# what protect the GPU, so the only thing this adds is reachability.
+# externalTrafficPolicy=Local preserves the client IP, which the per-IP rate
+# limiter needs to mean anything.
 gateway_service = k8s.core.v1.Service(
     "gateway",
     metadata={"name": "gateway", "namespace": NAMESPACE},
     spec={
+        "type": "LoadBalancer" if EXPOSE_PUBLICLY else "ClusterIP",
+        **({"external_traffic_policy": "Local"} if EXPOSE_PUBLICLY else {}),
         "selector": gateway_labels,
-        "ports": [{"name": "http", "port": 8080, "target_port": "http"}],
+        "ports": [{"name": "http", "port": 80 if EXPOSE_PUBLICLY else 8080, "target_port": "http"}],
     },
     opts=ns_opts,
 )
@@ -547,3 +609,12 @@ pulumi.export("cluster_name", cluster.name)
 pulumi.export("cluster_zone", cluster.location)
 pulumi.export("gpu_pool_max_nodes", pulumi.Output.from_input(GPU_MAX_NODES))
 pulumi.export("gateway_service", gateway_service.metadata["name"])
+if EXPOSE_PUBLICLY:
+    pulumi.export(
+        "demo_url",
+        gateway_service.status.apply(
+            lambda status: f"http://{status['load_balancer']['ingress'][0]['ip']}"
+            if status and status.get("load_balancer", {}).get("ingress")
+            else "pending"
+        ),
+    )

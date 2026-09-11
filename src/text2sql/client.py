@@ -101,23 +101,42 @@ class AnthropicClient(SqlClient):
         self.output_tokens = 0
 
     def complete(self, messages: list[dict], max_tokens: int = 2048, temperature: float = 0.0) -> str:
+        return self.complete_with_usage(messages, max_tokens)[0]
+
+    def complete_with_usage(
+        self, messages: list[dict], max_tokens: int = 2048
+    ) -> tuple[str, dict[str, int]]:
+        """Complete, and report this call's token usage.
+
+        The cumulative counters answer "what did that eval run cost"; a demo
+        showing cost per query needs the usage of the single call it just
+        made, which a delta of the counters cannot give safely under
+        concurrency.
+        """
         system = "\n".join(m["content"] for m in messages if m["role"] == "system")
         chat = [m for m in messages if m["role"] != "system"]
         resp = self._client.messages.create(
             model=self.model, max_tokens=max_tokens, system=system, messages=chat
         )
+        usage = {
+            "input_tokens": resp.usage.input_tokens,
+            "output_tokens": resp.usage.output_tokens,
+        }
         with self._lock:
-            self.input_tokens += resp.usage.input_tokens
-            self.output_tokens += resp.usage.output_tokens
+            self.input_tokens += usage["input_tokens"]
+            self.output_tokens += usage["output_tokens"]
         if resp.stop_reason == "refusal":
-            return ""
-        return next((b.text for b in resp.content if b.type == "text"), "")
+            return "", usage
+        return next((b.text for b in resp.content if b.type == "text"), ""), usage
 
-    def cost_usd(self) -> float | None:
+    def cost_for(self, input_tokens: int, output_tokens: int) -> float | None:
         prices = self.PRICES.get(self.model)
         if prices is None:
             return None
-        return self.input_tokens / 1e6 * prices[0] + self.output_tokens / 1e6 * prices[1]
+        return input_tokens / 1e6 * prices[0] + output_tokens / 1e6 * prices[1]
+
+    def cost_usd(self) -> float | None:
+        return self.cost_for(self.input_tokens, self.output_tokens)
 
 
 class GatewayClient(SqlClient):

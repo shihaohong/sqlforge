@@ -108,10 +108,31 @@ Finally, `sqlglot` raises `TokenError` (not `ParseError`) on an unterminated quo
 - [x] Pulumi program (`deploy/__main__.py`, Python): zonal GKE cluster with Workload Identity and Managed Prometheus, an `e2-standard-2` system pool (1-3 nodes), a `g2-standard-8` GPU pool **autoscaling 0-1 across all three zones of the region**, the vLLM and gateway Deployments, Services, an HPA, and PodMonitoring for both tiers. `pulumi preview` is clean at 17 resources.
 - [x] Health/readiness probes: vLLM gets a long startup probe (a cold start is node provisioning + driver install + a 6GB image pull + a 2.1GB model download + weight load) and a deliberately slack liveness probe so a busy engine is not mistaken for a hung one. The gateway's liveness checks only itself, while readiness checks the model server - restarting a gateway cannot fix a vLLM that is down, but a gateway with no model behind it should leave the Service rather than serve 502s.
 - [x] The model reaches the pod through an init container that `gcloud storage rsync`s it from GCS under Workload Identity, so there is no service-account key in the cluster and swapping models is a config change rather than a multi-gigabyte image rebuild.
-- [ ] `pulumi up` against the real project (blocked on an approval, see below).
-- [ ] Repeat the load test through the full K8s path (`deploy/bench_in_cluster.sh` runs the same driver as a pod on the system pool, so the measurement covers Service -> gateway -> vLLM with no laptop network in the middle).
+- [x] `pulumi up` against the real project. The first apply found three bugs that no preview could (below); after fixing them, a `pulumi destroy` (17 resources, 9m17s) followed by a from-scratch `pulumi up` reproduced the whole stack in **one pass, 25m41s, 17 created and 0 errored** - no manual steps.
+- [x] Repeat the load test through the full K8s path (`deploy/bench_in_cluster.sh`): **within ±2% of the bare-VM numbers at every concurrency level**, so Kubernetes costs nothing measurable.
+- [x] Autoscaling, observed rather than asserted: the GPU pool scaled **0 -> 1** on a pending pod, the HPA scaled the gateway **2 -> 3** under load and **3 -> 2** when idle, and the CPU pool scaled **1 -> 2** to give the benchmark driver its own node.
 
-Exit criteria: `pulumi up` brings up the whole stack from scratch. **Not yet met** - everything the apply consumes is built and previewing clean, but the apply itself has not run.
+Exit criteria: `pulumi up` brings up the whole stack from scratch, reproducible by script. **M4 complete.**
+
+| Concurrency | QPS (GKE) | QPS (bare VM) | p50 | p99 | output tok/s | $/1k queries |
+|---|---|---|---|---|---|---|
+| 1 | 3.2 | 3.3 | 230ms | 1258ms | 95 | $0.0730 |
+| 8 | 20.0 | 20.4 | 299ms | 1512ms | 642 | $0.0118 |
+| 16 | 34.7 | 35.0 | 355ms | 1680ms | 1112 | $0.0068 |
+| 32 | 52.2 | 52.1 | 464ms | 2333ms | 1679 | $0.0045 |
+| 64 | 65.7 | 64.4 | 751ms | 3784ms | 2119 | $0.0036 |
+| 128 | 74.5 | 75.2 | 1363ms | 6650ms | 2419 | $0.0032 |
+
+Cold start with the GPU pool at zero, which is the price of scale-to-zero: ~90s for the node plus GPU driver, 19s for the init image, **25s to pull the 2.1GB model from GCS**, **3m12s to pull the 8.6GB vLLM image**, then weight load - about 6.5 minutes to first token. On a warm node it is ~2m20s. The image dominates, so caching it (a warm node pool, a smaller runtime image, or GKE image streaming) is where any latency work belongs, not the model download.
+
+The first in-cluster benchmark also produced a lesson rather than a number: throughput *fell* from 60.3 QPS at concurrency 64 to 52.9 at 128, because the driver pod and all three gateway replicas were scheduled onto one 2-vCPU node and starved each other. The driver now requests 2 CPUs with anti-affinity against the gateway, and the numbers above match the bare-VM run. Same mistake as measuring through an SSH tunnel, one layer in.
+
+Three bugs the first apply found, each invisible to `pulumi preview`:
+1. **Workload Identity ordering.** The `iam.workloadIdentityUser` binding references the `PROJECT.svc.id.goog` pool, which does not exist until a WI-enabled cluster does. The member is an f-string with no cluster output in it, so Pulumi had no data-flow edge to order on and created the binding in parallel with the still-provisioning cluster.
+2. **`master_auth` arrives in an apply as a plain dict**, not the typed `ClusterMasterAuth`. Preview passed either way: before the cluster exists the value is unknown, so Pulumi skips the apply body entirely and that line first executed during the apply.
+3. **`enableServiceLinks`.** Kubernetes injects `<SVCNAME>_PORT=tcp://ip:port` for every Service in the namespace, and the Service in front of vLLM is named `vllm` - so the pod received `VLLM_PORT=tcp://10.x.x.x:8000`, which collides with vLLM's own `VLLM_PORT` and stopped the server from starting.
+
+And one application bug that only a multi-node topology could expose: `serve_gateway.py` built its defaults from `Settings()` rather than `Settings.from_env()`, so `SQLFORGE_*` was never read and the gateway dialed `localhost:8000` regardless. On a single box that default was correct, which is exactly why M1-M3 never noticed. `tests/test_serve_gateway.py` now asserts the wiring.
 
 **The GPU quota shapes this milestone.** A GKE GPU node is an ordinary Compute Engine VM and draws from the same GPU quota as the M1-M3 box, and quota caps *concurrently attached* GPUs: this project has `NVIDIA_L4_GPUS = 1` in us-central1 and `GPUS_ALL_REGIONS = 1` globally.
 So the GPU pool holds at most one node, the old `t2s-gpu` VM must stay stopped while that node exists, and an HPA on vLLM would have nowhere to scale - a second replica would request a GPU, fail to schedule, trigger a scale-up, and have it refused for quota, leaving the pod `Pending` and the HPA reading `desired 2 / current 1` forever. That is a stuck rollout, not autoscaling.
@@ -121,7 +142,21 @@ What autoscales today, then, is the part that can: **the GPU pool scales to zero
 
 Operational notes (details in [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)): zonal L4 capacity ran out mid-milestone (`STOCKOUT` refused to start an already-provisioned VM), which is what motivated spreading the GPU pool across all three zones; the deep-learning VM image ships with `devstorage.read_only` scopes, so uploading the artifact to GCS needed a scope change with the instance stopped; and Cloud Build's docker builder runs the legacy engine, so BuildKit cache mounts fail there.
 
-### M5: Hardening and writeup
+### M5: Interactive demo
+
+A demo neither moves the headline numbers nor makes them more trustworthy, so it does not fit the rule above.
+It is here because it *communicates* them: the project's argument is an economic one, and a side-by-side you can click is a far better carrier for it than a table.
+
+- [ ] Side-by-side demo page: pick a database, ask a question, watch the fine-tuned 3B stream its SQL, see the query execute against the real sqlite file, and see whether the rows match the gold query - with Claude Haiku 4.5 answering the same question beside it, each labelled with measured latency and $/query.
+- [ ] `GET /v1/demo/schemas`, `POST /v1/demo/execute`, `POST /v1/demo/compare` on the existing gateway; the local model streams through the existing `/v1/sql/stream`, which until now had no consumer and so had never been exercised against a browser.
+- [ ] Bundle the sample databases: 19 of the 20 dev databases total ~1MB (`wta_1` alone is 105MB and is excluded), so live execution costs the image almost nothing.
+- [ ] Vite + React + Tailwind, built in a Dockerfile stage and served by the gateway itself through `StaticFiles` - one container, one URL, no CORS, no second service.
+- [ ] Public behind a shared token and rate limits: per-IP limits, a hard daily cap, and a separate tighter cap on the Claude path since every call there costs money. An unauthenticated GPU on the internet is not acceptable.
+- [ ] Execution safety on top of the existing SELECT-only guardrail: read-only connections, a short statement timeout, and a row cap.
+
+Exit criteria: a public URL where a stranger with the token can ask a question and watch both engines answer, with correctness and cost shown.
+
+### M6: Hardening and writeup
 
 - [ ] Eval regression gate in CI: any model/prompt change re-runs a dev-set subset and fails on regression.
 - [ ] Technical writeup: decisions, tradeoffs, and the final numbers table. This is the artifact recruiters and interviewers actually read.
