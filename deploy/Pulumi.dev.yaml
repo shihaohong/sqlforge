@@ -1,0 +1,11 @@
+config:
+  sqlforge:modelBucket: sqlforge-text2sql-serving-sh
+  sqlforge:modelPrefix: models/merged-gptq
+  sqlforge:gatewayImage: us-central1-docker.pkg.dev/text2sql-serving-sh/sqlforge/gateway:latest
+  # One L4 is the whole GPU quota today; raising this to 2 is the only change
+  # needed to let the vLLM deployment scale once the quota increase lands.
+  sqlforge:gpuMaxNodes: "1"
+  sqlforge:vllmReplicas: "1"
+  sqlforge:gatewayMinReplicas: "2"
+  sqlforge:gatewayMaxReplicas: "6"
+encryptionsalt: v1:Isg2lx+iOpc=:v1:3qDT08xgqz04vAvn:v3vC5LOySz0S58kbzgwLeoPR3LO/OQ==

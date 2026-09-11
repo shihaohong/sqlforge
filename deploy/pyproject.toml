@@ -1,0 +1,12 @@
+# Separate from the application project on purpose: the IaC program has no
+# reason to pull in torch, and Pulumi drives it with its own uv toolchain.
+[project]
+name = "sqlforge-deploy"
+version = "0.1.0"
+description = "Pulumi program for the SQLForge serving stack on GKE"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "pulumi>=3.150",
+    "pulumi-gcp>=8.0",
+    "pulumi-kubernetes>=4.18",
+]

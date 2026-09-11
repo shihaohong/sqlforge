@@ -25,3 +25,6 @@ wandb/
 
 # Eval outputs: keep summaries, skip bulky per-example dumps
 runs/*.jsonl
+
+# Pulumi: state lives in GCS, and the local venv/lock for the IaC program
+deploy/.venv/

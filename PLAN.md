@@ -104,11 +104,22 @@ Finally, `sqlglot` raises `TokenError` (not `ParseError`) on an unterminated quo
 
 ### M4: Kubernetes deployment
 
-- [ ] GKE cluster (Pulumi), GPU node pool, vLLM + gateway as deployments.
-- [ ] Health/readiness probes, HPA on a sensible signal (queue depth or GPU utilization).
-- [ ] Repeat the load test through the full K8s path.
+- [x] Prerequisites, all outside the Pulumi program on purpose (they outlive any cluster, and `pulumi destroy` must not be able to delete model weights or the image it deployed): the GPTQ artifact in GCS (`gs://sqlforge-text2sql-serving-sh/models/merged-gptq`, 2.10GiB), an Artifact Registry repo, and the gateway image built by Cloud Build (`deploy/Dockerfile`, multi-stage, non-root, 532MB).
+- [x] Pulumi program (`deploy/__main__.py`, Python): zonal GKE cluster with Workload Identity and Managed Prometheus, an `e2-standard-2` system pool (1-3 nodes), a `g2-standard-8` GPU pool **autoscaling 0-1 across all three zones of the region**, the vLLM and gateway Deployments, Services, an HPA, and PodMonitoring for both tiers. `pulumi preview` is clean at 17 resources.
+- [x] Health/readiness probes: vLLM gets a long startup probe (a cold start is node provisioning + driver install + a 6GB image pull + a 2.1GB model download + weight load) and a deliberately slack liveness probe so a busy engine is not mistaken for a hung one. The gateway's liveness checks only itself, while readiness checks the model server - restarting a gateway cannot fix a vLLM that is down, but a gateway with no model behind it should leave the Service rather than serve 502s.
+- [x] The model reaches the pod through an init container that `gcloud storage rsync`s it from GCS under Workload Identity, so there is no service-account key in the cluster and swapping models is a config change rather than a multi-gigabyte image rebuild.
+- [ ] `pulumi up` against the real project (blocked on an approval, see below).
+- [ ] Repeat the load test through the full K8s path (`deploy/bench_in_cluster.sh` runs the same driver as a pod on the system pool, so the measurement covers Service -> gateway -> vLLM with no laptop network in the middle).
 
-Exit criteria: `pulumi up` brings up the whole stack from scratch.
+Exit criteria: `pulumi up` brings up the whole stack from scratch. **Not yet met** - everything the apply consumes is built and previewing clean, but the apply itself has not run.
+
+**The GPU quota shapes this milestone.** A GKE GPU node is an ordinary Compute Engine VM and draws from the same GPU quota as the M1-M3 box, and quota caps *concurrently attached* GPUs: this project has `NVIDIA_L4_GPUS = 1` in us-central1 and `GPUS_ALL_REGIONS = 1` globally.
+So the GPU pool holds at most one node, the old `t2s-gpu` VM must stay stopped while that node exists, and an HPA on vLLM would have nowhere to scale - a second replica would request a GPU, fail to schedule, trigger a scale-up, and have it refused for quota, leaving the pod `Pending` and the HPA reading `desired 2 / current 1` forever. That is a stuck rollout, not autoscaling.
+An increase to 4 L4s has been requested for both quotas (pending); `sqlforge:gpuMaxNodes` and `sqlforge:vllmReplicas` in `Pulumi.dev.yaml` are the only changes needed once it lands.
+
+What autoscales today, then, is the part that can: **the GPU pool scales to zero**, so an idle cluster costs only the system pool and a pending vLLM pod brings the expensive node up on demand. The HPA targets the gateway tier on CPU, which is the honest signal for it - per request the gateway renders a prompt, parses the completion with sqlglot, and runs the guardrail, and that is CPU work. Queue depth (`vllm:num_requests_waiting`) is scraped by Managed Prometheus and is the signal a GPU-tier HPA would use, but scaling the gateway on it would be architecturally wrong: more proxy replicas do not drain a GPU queue.
+
+Operational notes (details in [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)): zonal L4 capacity ran out mid-milestone (`STOCKOUT` refused to start an already-provisioned VM), which is what motivated spreading the GPU pool across all three zones; the deep-learning VM image ships with `devstorage.read_only` scopes, so uploading the artifact to GCS needed a scope change with the instance stopped; and Cloud Build's docker builder runs the legacy engine, so BuildKit cache mounts fail there.
 
 ### M5: Hardening and writeup
 

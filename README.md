@@ -2,7 +2,7 @@
 
 > **Status: work in progress.**
 > This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> Baselines, the eval harness, the QLoRA fine-tune, 4-bit quantization, and the served benchmark are done; Kubernetes deployment and the writeup are still ahead.
+> Baselines, the eval harness, the QLoRA fine-tune, 4-bit quantization, and the served benchmark are done; the Kubernetes deployment is written and previewing clean but not yet applied, and the writeup is still ahead.
 > Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state, and [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md) for what went wrong along the way.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
@@ -169,6 +169,38 @@ scripts/gcp/vm.sh bench --target vllm                     # same load, bypassing
 scripts/gcp/vm.sh results                                 # pull runs/loadtest-*.json back
 ```
 
+## Deploying to Kubernetes (M4, in progress)
+
+The whole serving stack is one Pulumi program: a zonal GKE cluster, a small CPU pool for the gateway, and a `g2-standard-8` GPU pool that **autoscales 0-1 across every zone in the region**, so an idle cluster costs only the CPU pool and a pending vLLM pod is what brings the expensive node up.
+
+Prerequisites live outside the program, because `pulumi destroy` should never be able to delete model weights or the image it just deployed:
+
+```bash
+# the serving artifact, read by the vLLM pod's init container under Workload Identity
+gcloud storage rsync -r out/merged-gptq gs://<bucket>/models/merged-gptq
+
+# the gateway image, built on Cloud Build (nodes are amd64; Macs are not)
+gcloud builds submit --config deploy/cloudbuild.yaml \
+  --substitutions=_TAG=$(git rev-parse --short HEAD) .
+```
+
+Then bring the stack up and benchmark it from inside the cluster:
+
+```bash
+cd deploy
+pulumi login gs://<bucket>/pulumi-state
+pulumi up
+
+./bench_in_cluster.sh --concurrency 1,8,32,64 --duration 30
+pulumi destroy            # GPU pool scales to zero on its own; this removes the rest
+```
+
+`deploy/bench_in_cluster.sh` runs the same load-test driver as a pod on the CPU pool, so it measures Service -> gateway -> vLLM rather than the path from a laptop to the cluster.
+Both tiers are scraped by Managed Prometheus, including vLLM's `vllm:num_requests_waiting`.
+
+One constraint worth knowing before you copy this: GPU quota caps *concurrently attached* GPUs, per region and globally, and a GKE GPU node draws from the same allowance as any other VM.
+With the default limit of 1, the GPU pool holds one node and the vLLM deployment cannot scale horizontally - so the HPA here targets the gateway tier, and PLAN.md records what changes when more quota lands.
+
 ## Repository layout
 
 ```
@@ -176,7 +208,7 @@ src/text2sql/       library: data loading, prompt template, SQL execution, eval,
 scripts/            entrypoints: run_eval.py, train.py, quantize.py, serve_gateway.py, loadtest.py, gcp/vm.sh
 tests/              unit tests: eval harness, SQL guardrails, gateway (mocked vLLM upstream)
 configs/            training and serving configs
-deploy/             infrastructure-as-code (M4)
+deploy/             Pulumi program (GKE cluster, node pools, workloads), gateway Dockerfile, in-cluster benchmark
 data/               datasets, rendered SFT files, serving assets (gitignored)
 runs/               eval outputs (per-example jsonl + summary json) and load-test results
 PLAN.md             milestone plan, decision log, detailed results

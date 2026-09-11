@@ -1,0 +1,13 @@
+name: sqlforge
+runtime:
+  name: python
+  options:
+    toolchain: uv
+description: GKE cluster, GPU node pool, and the vLLM + gateway deployments for SQLForge.
+config:
+  gcp:project:
+    value: text2sql-serving-sh
+  gcp:zone:
+    value: us-central1-a
+  gcp:region:
+    value: us-central1

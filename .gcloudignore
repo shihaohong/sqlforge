@@ -1,0 +1,12 @@
+# Cloud Build context: ship the app and the rendered schema cache, nothing else.
+.git/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+models/
+runs/
+notebooks/
+data/spider_data/
+data/sft/
