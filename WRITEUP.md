@@ -109,7 +109,7 @@ Cold start from zero GPUs is about 6.5 minutes, and the dominant term is not the
 
 ## What these numbers do not mean
 
-- **The harness is mine, not the official one.** Execution accuracy here uses my own comparison (unordered multiset, float tolerance, order enforced when the reference query has ORDER BY). Cross-checking against Spider's official test-suite evaluation is still outstanding, and until that is done these numbers are internally consistent rather than externally comparable.
+- **The harness is mine, not the official one.** Execution accuracy here uses my own comparison (unordered multiset, float tolerance, order enforced when the reference query has ORDER BY), validated by a gold-vs-gold check that must score exactly 100%. Cross-checking against Spider's official test-suite evaluation was considered and declined, so these numbers are internally consistent and comparable across this project's runs, but not directly comparable to published leaderboard figures.
 - **Subset scores move by several points.** The CI gate scores the first 200 dev examples and gets 68.0%, against 71.2% on the full set. Comparisons are only valid on identical example sets.
 - **Generation is not deterministic.** Re-running the gate against an unchanged deployment moved the score by a point, because vLLM's continuous batching changes how requests are grouped and therefore the arithmetic. Any threshold has to absorb that.
 - **One GPU is the whole experiment.** The project's quota is a single L4, so the vLLM tier cannot scale horizontally and none of these numbers say anything about multi-GPU behaviour.
@@ -143,8 +143,10 @@ The general form: enumerate what sits between the driver and the thing being mea
 
 ## What I would do next
 
-- **Cross-check against Spider's official test-suite evaluation**, so the accuracy numbers are comparable to published work and not only to each other.
-- **Close the 2.8-point gap.** The obvious lever is the base model: Qwen2.5-Coder 3B is generally stronger at SQL than Llama-3.2 3B, and the same recipe would transfer. The remaining 229 failures mostly run and return wrong rows, which points at join and aggregation semantics rather than schema grounding.
+Two of these were considered and consciously dropped, which is worth saying plainly rather than leaving them to look like oversights.
+
+- **Cross-checking against Spider's official test-suite evaluation: decided against.** Every number here comes from one harness, so they are internally consistent and comparable across this project's own runs, which are the comparisons the project actually makes. The cost of that choice is that they are not directly comparable to published leaderboard figures, and the limitation above says so.
+- **Closing the 2.8-point gap: not pursued.** The obvious lever is the base model, since Qwen2.5-Coder 3B is generally stronger at SQL and the recipe would transfer unchanged. The remaining 229 failures mostly run and return wrong rows, which points at join and aggregation semantics rather than schema grounding. The project's question was about the economics of self-hosting, though, and that question is answered.
 - **Shrink the cold start.** The 8.6GB engine image dominates it, so a slimmer runtime image or GKE image streaming would matter far more than anything about the model.
 - **Make the cost curve less cliff-like.** Scale-to-zero handles idle, but the first request after idle pays 6.5 minutes. Keeping a warm node during business hours and scaling to zero overnight would be the pragmatic compromise.
 - **Test on harder data.** Spider is a benchmark; BIRD or a private schema set would say more about whether this transfers to real databases with hundreds of tables.
@@ -157,3 +159,4 @@ Training and serving need one L4; `scripts/gcp/vm.sh` drives a single VM and `de
 
 Continuous integration runs lint, 101 tests, the frontend type-check and build, and the frozen prompt contract on every push.
 The accuracy gate (`scripts/eval_gate.py`) runs real questions against the live endpoint and fails on a regression beyond 3 points, which is the only check that can see the class of bug described above.
+It is verified end to end in GitHub Actions: a dispatched run downloads the dataset, proves the harness scores gold-vs-gold at 100%, scores 200 dev examples against the deployed HTTPS endpoint, and reports the delta against the baseline in about 40 seconds.

@@ -11,6 +11,9 @@ Fine-tune, quantize, and serve a small (3B) text-to-SQL model as a production-gr
 Every milestone below either moves one of those numbers or makes them trustworthy.
 The project is done when the numbers are real.
 
+**Status: all six milestones complete.** The numbers are real, measured through the deployed service rather than estimated, and a regression in them now fails a check.
+The full argument is written up in [WRITEUP.md](WRITEUP.md); this file remains the log of what was decided and measured at each step.
+
 ## Why text-to-SQL
 
 - The metric is unambiguous: **execution accuracy**.
@@ -34,7 +37,8 @@ Training path: Spider train set -> QLoRA fine-tune (W&B tracked) -> merge adapte
 ### M0: Baselines and eval harness (no GPU needed)
 
 - [x] Download Spider 1.0 (train/dev splits + sqlite databases). Used the 2024 official release (`spider_data.zip`), which also includes the formerly held-out test set (2,147 examples): `uvx gdown 1403EGqzIDoHMdQF4c9Bkyl7dZLZ5Wt6J -O data/spider_data.zip`.
-- [x] Build the eval harness: run generated SQL against the sqlite DBs, compute execution accuracy on the dev set (1,034 examples). Gold-vs-gold sanity check passes at 100% (`uv run scripts/run_eval.py sanity`). Unordered multiset comparison with float tolerance; row order enforced when the gold query has ORDER BY. Cross-check against the official test-suite evaluation before publishing final numbers.
+- [x] Build the eval harness: run generated SQL against the sqlite DBs, compute execution accuracy on the dev set (1,034 examples). Gold-vs-gold sanity check passes at 100% (`uv run scripts/run_eval.py sanity`). Unordered multiset comparison with float tolerance; row order enforced when the gold query has ORDER BY.
+  **Decided against cross-checking with Spider's official test-suite evaluation.** Every number here comes from this one harness, which makes them internally consistent and comparable across the project's own runs - the comparisons that the project actually makes. It also means they are not directly comparable to published Spider leaderboard figures, and [WRITEUP.md](WRITEUP.md) says so rather than implying otherwise.
 - [x] Baseline 1: base Llama-3.2 3B Instruct, zero-shot with schema-as-DDL in prompt (via ollama locally). **61.4%** execution accuracy (635/1034). Failure profile: 280 ran-but-wrong-rows, 117 "no such column", 2 "no such table" - schema grounding is the dominant weakness, which is exactly what fine-tuning on schema-paired examples targets.
 - [x] Baseline 2: Claude Haiku 4.5 (cost-matched competitor) **74.0%** on full dev at $0.68/1k queries; Claude Opus 5 (quality ceiling) **96.7%** on the first 300 dev examples at $5.11/1k queries. Same-300-subset scores: Llama 58.7% / Haiku 71.7% / Opus 96.7%.
 
@@ -45,7 +49,7 @@ Exit criteria: one command reproduces a baseline execution-accuracy number and a
 - [x] Prompt/format design: schema-as-DDL prompt template in `src/text2sql/prompts.py`, shared verbatim by training, eval, and serving (no train/serve skew possible).
 - [x] QLoRA fine-tune Llama-3.2 3B on Spider train (6,800 train / 200 val after shuffle). 4-bit NF4 base, LoRA r=16 alpha=32 on all attention + MLP projections, LR 2e-4 cosine with 25 warmup steps, effective batch 16, 2 epochs (850 steps), completion-only loss, max_length 4096. Final: train loss 0.089, val loss 0.067, val token accuracy 97.7%. ~3h wall clock on one L4.
 - [x] Evaluate with the M0 harness (served via vLLM + LoRA adapter on the L4). **72.7%** execution accuracy (752/1034), +11.3 pts over the base model, 1.3 pts under Haiku 4.5. On the shared 300-example subset it scores 74.0% vs Haiku's 71.7%. Failure profile vs base: "no such column" errors cut from 117 to 50, syntax errors near zero (2); the remaining 229 failures run but return wrong rows.
-- [ ] Stretch: same recipe on Qwen2.5-Coder 3B for comparison (often stronger at SQL).
+- [~] Stretch, **not pursued**: the same recipe on Qwen2.5-Coder 3B, which is generally stronger at SQL. It remains the most obvious lever on the remaining 2.8-point gap to Haiku, and the recipe would transfer unchanged, but the project's question was about the economics of self-hosting a small model rather than about squeezing out the last points.
 
 Exit criteria: fine-tuned execution accuracy beats base model by a wide margin and is within striking distance of the API baseline. **M1 complete** (+11.3 pts over base; statistically tied with Haiku).
 
@@ -172,6 +176,7 @@ Two bugs worth recording, both found only by deploying:
 - [x] **Fast CI on every push** (`.github/workflows/ci.yml`): ruff lint and format, 101 tests, the frontend type-check and build, and a syntax/lint pass over the Pulumi program. About two seconds of test time, so there is no reason to skip it.
 - [x] **The prompt template is frozen by a test** (`tests/test_prompt_contract.py`). The weights were trained against those exact strings, and training, eval, serving and the demo all render through one function, so a reworded instruction or a stray newline moves every served prompt off the distribution the model was tuned on with no symptom but lower accuracy. The test states plainly that a failure means re-running the eval gate, not editing the expected value.
 - [x] **Eval regression gate** (`scripts/eval_gate.py`, `.github/workflows/eval-gate.yml`): scores a fixed prefix of the dev split against a live endpoint and fails if accuracy drops more than 3 points below `runs/eval-baseline.json`. Verified in both directions - it passes on an unchanged deployment (-1.0 pts) and exits 1 against a baseline simulating a 23-point regression.
+- [x] The gate is wired up and **verified running in GitHub Actions**, not just locally: a dispatched run downloads the dataset, proves the harness scores gold-vs-gold at 100%, then scores 200 dev examples against the live HTTPS endpoint with the rate-limit-exempt service token. End to end in about 40 seconds, result `68.0% baseline vs 67.0% this run, -1.0 pts, gate passed`.
 - [x] **Technical writeup** ([WRITEUP.md](WRITEUP.md)): the question, the measured answer, the honest economics including where self-hosting *loses*, the decision at each stage, what the numbers do not mean, and the four bugs that changed how I work. Every figure in it was checked back against the files in `runs/`.
 
 Exit criteria: a regression in accuracy fails a check rather than being discovered later, and the project's results are written down where someone else can read them. **M6 complete.**
@@ -214,3 +219,25 @@ uv sync                      # core + eval deps
 uv sync --group train        # on the GPU box
 uv sync --group serve        # on the serving box
 ```
+
+## Where it landed
+
+| | |
+|---|---|
+| Execution accuracy, base model | 61.4% |
+| Execution accuracy, fine-tuned | **72.7%** (+11.3) |
+| Execution accuracy, served 4-bit artifact | **71.2%** (-1.4 for quantization) |
+| Execution accuracy, Claude Haiku 4.5 | 74.0% (a 2.8-point gap) |
+| Latency, served | p50 304ms, p99 1.5s at 20 QPS |
+| Peak throughput, one L4 | 74.5 QPS, 2,419 output tokens/s |
+| Cost at 20 QPS | **$0.0118/1k queries, 58x cheaper than Haiku** |
+| Break-even against Haiku | 0.35 QPS, about 30,000 queries/day |
+| Kubernetes overhead | within ±2% at every concurrency level |
+| Cold start from zero GPUs | ~6.5 min, dominated by an 8.6GB image pull |
+| Accuracy through the production path | 736/1034, identical to scoring vLLM directly |
+
+Fine-tuning cost about **$4** of L4 time. The eval harness, the prompt template, the guardrail, the gateway, the benchmark driver and the demo are all one codebase with 101 tests and a frozen prompt contract behind them, and the accuracy of the deployed service is now gated against a recorded baseline.
+
+The honest summary: the fine-tune did not beat the API model on quality, and it was never going to at 3B. It got within 2.8 points, and at any real volume it serves those answers for a fraction of a percent of the price. Whether that trade is worth making is a product decision, and the point of the project was to produce numbers precise enough to make it with.
+
+What is deliberately left undone is recorded above: no cross-check against Spider's official evaluation, and no Qwen2.5-Coder comparison.

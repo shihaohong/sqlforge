@@ -1,10 +1,12 @@
 # SQLForge
 
-> **Status: work in progress.**
-> This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> All six milestones are complete: baselines and eval harness, QLoRA fine-tune, 4-bit quantization, serving and benchmarks, Kubernetes deployment, an interactive demo, and CI regression gating with a written-up result.
-> Start with [WRITEUP.md](WRITEUP.md) for what was built and what it measured.
-> Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state, and [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md) for what went wrong along the way.
+> **Status: complete.**
+> A personal project taking one small model through the whole lifecycle of a production inference service: fine-tuning, quantization, serving, load testing, Kubernetes, a public demo, and a regression gate.
+> All six milestones are done and every number below was measured rather than estimated.
+>
+> - **[WRITEUP.md](WRITEUP.md)** - start here: the question, the results, and the economics including where self-hosting loses.
+> - **[PLAN.md](PLAN.md)** - the milestone log, with the decision and the measurement at each step.
+> - **[FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)** - 23 things that went wrong and what they taught, symptom first.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
 
@@ -232,6 +234,19 @@ Both tiers are scraped by Managed Prometheus, including vLLM's `vllm:num_request
 
 One constraint worth knowing before you copy this: GPU quota caps *concurrently attached* GPUs, per region and globally, and a GKE GPU node draws from the same allowance as any other VM.
 With the default limit of 1, the GPU pool holds one node and the vLLM deployment cannot scale horizontally - so the HPA here targets the gateway tier, and PLAN.md records what changes when more quota lands.
+
+## Current deployment
+
+The stack is deployed on GKE and the demo is live behind a token.
+Bringing it up from nothing is a single `pulumi up` (about 26 minutes, most of it the GPU node's cold start); tearing it down is a single `pulumi destroy`.
+
+```bash
+cd deploy && pulumi stack output demo_url     # the live URL
+cd deploy && pulumi destroy                   # removes the cluster and both workloads
+```
+
+Running costs, for calibration: the L4 node is about $0.85/hour and only exists while a vLLM pod is scheduled, the CPU node about $0.13/hour, and the zonal control plane is covered by GKE's free tier.
+Two things deliberately live outside the Pulumi program and survive a destroy, because `pulumi destroy` should not be able to delete model weights or invalidate a shared link: the GCS bucket holding the 2.1GB serving artifact (about $0.05/month) and the reserved IP address the demo hostname is built from (free while attached, a few dollars a month if left unattached).
 
 ## Repository layout
 
