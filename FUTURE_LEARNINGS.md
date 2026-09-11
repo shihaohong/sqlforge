@@ -131,3 +131,49 @@ Export that kubeconfig as a secret stack output so `kubectl` and benchmark scrip
 The model weights in GCS and the container image in Artifact Registry are deliberately created outside the Pulumi program.
 Both outlive any individual cluster, and `pulumi destroy` should not be capable of deleting the artifact you spent GPU hours producing or the image currently deployed.
 The rule of thumb: IaC owns what you would happily recreate from scratch, and references what you would be upset to lose.
+
+## `pulumi preview` cannot see inside an apply over unknown outputs
+
+**Symptom:** two clean previews, then `pulumi up` died with `AttributeError: 'dict' object has no attribute 'cluster_ca_certificate'` in a lambda building a kubeconfig.
+
+**Cause:** before the cluster exists, its `master_auth` is an *unknown* output, and Pulumi skips an `apply` body whose inputs are unknown. So the code never ran during preview. Once the cluster was real, the lambda executed for the first time - during the apply - and the value arrived as a plain dict rather than the typed `ClusterMasterAuth`.
+
+**Lesson:** a clean preview says nothing about code inside `.apply()` that depends on resources not yet created; that code is only exercised on a real apply against real state.
+Keep apply bodies trivial, and read provider output objects as mappings when both shapes are possible (`gcp.container.ClusterMasterAuth` subclasses `dict` with snake_case keys, so `.get("cluster_ca_certificate")` works for the typed class and the plain dict alike).
+The practical consequence: budget for the first apply of a new stack to fail in ways preview cannot predict, and never treat preview as a substitute for a from-scratch apply in a throwaway project.
+
+## Pulumi infers dependencies from data flow, so string-built references have none
+
+**Symptom:** `Error 400: Identity Pool does not exist (PROJECT.svc.id.goog)` when binding `roles/iam.workloadIdentityUser`, on a stack that creates the cluster in the same run.
+
+**Cause:** the project's Workload Identity pool only exists once a cluster with Workload Identity has been created, and the binding's member was an f-string (`f"serviceAccount:{PROJECT}.svc.id.goog[{ns}/{ksa}]"`) containing no output from the cluster. With nothing in the data flow to order them, Pulumi created the binding in parallel with the still-provisioning cluster.
+
+**Lesson:** whenever a resource depends on another's *side effect* rather than on one of its output values, say so with `depends_on` - Pulumi (and Terraform) can only infer what it can see referenced.
+Workload Identity is the canonical example: the pool is a side effect of cluster creation, and every binding into it needs the explicit edge.
+
+## Do not pipe a command whose exit code you intend to check
+
+`pulumi up --yes | tail -40` exits 0 even when the update fails, because the shell reports the *last* command's status - so a failed apply looked like a success.
+Redirect to a file and echo `$?` (or set `pipefail`) when the status is the thing you care about.
+This one is easy to get away with for a long time and then badly misleads at exactly the wrong moment.
+
+## A Kubernetes Service name can poison the container it points at
+
+**Symptom:** vLLM crash-looped in the pod with `ValueError: VLLM_PORT 'tcp://34.118.228.58:8000' appears to be a URI`, having started fine on a VM with identical arguments.
+
+**Cause:** Kubernetes injects Docker-link-style environment variables for every Service in the namespace - `<SVCNAME>_PORT=tcp://<clusterIP>:<port>`, uppercased. The Service in front of the pod was named `vllm`, so the pod received `VLLM_PORT=tcp://...`, which collides with vLLM's own `VLLM_PORT` configuration variable.
+
+**Lesson:** set `enableServiceLinks: false` on pod specs as a matter of habit.
+It is legacy compatibility almost nobody uses, the injected variables scale with the number of Services in the namespace, and any of them can collide with an application's own configuration - a class of bug that is invisible locally and depends on what else happens to be deployed alongside.
+Renaming the Service also works, but then a future rename reintroduces the bug; disabling the mechanism fixes the class.
+
+## A default that is correct in one topology hides missing configuration
+
+**Symptom:** the gateway pod reported healthy, its `SQLFORGE_UPSTREAM` environment variable was correct, vLLM was reachable from inside that very pod - and `/readyz` still answered "All connection attempts failed".
+
+**Cause:** the CLI entrypoint built its defaults from `Settings()` rather than `Settings.from_env()`, so the environment was never read and the upstream stayed at the dataclass default, `http://localhost:8000/v1`.
+On a single box - every earlier milestone - that default was exactly right, so the missing wiring behaved identically to working wiring.
+
+**Lesson:** configuration that is only exercised in one topology is untested configuration, and a default that coincides with the correct value is the most effective way to hide a broken path.
+Test the wiring itself (set the env, invoke the entrypoint, assert what reached the settings object) rather than trusting that a value present in the environment must have been read.
+The tell here was the mismatch between two facts that could not both be true: the address in the environment was reachable, and the process could not reach its configured address.

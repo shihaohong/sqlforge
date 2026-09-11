@@ -14,7 +14,17 @@ import uvicorn
 
 from text2sql.gateway import Settings, create_app
 
-DEFAULTS = Settings()
+# Defaults come from the environment, so SQLFORGE_* works in a container and
+# explicit flags still win. Settings() alone would ignore the environment
+# entirely - and its default upstream (localhost:8000) is exactly right on a
+# single box, which is how that went unnoticed until the gateway ran in a pod
+# with vLLM on another node.
+# Defaults come from the environment, so SQLFORGE_* works in a container and
+# explicit flags still win. Settings() alone would ignore the environment
+# entirely - and its default upstream (localhost:8000) is exactly right on a
+# single box, which is how that went unnoticed until the gateway ran in a pod
+# with vLLM on another node.
+DEFAULTS = Settings.from_env()
 
 
 def main(

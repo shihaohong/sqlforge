@@ -162,11 +162,20 @@ gcp.storage.BucketIAMMember(
 )
 
 # Binds the Kubernetes service account below to the Google one.
+#
+# depends_on the cluster, and not for tidiness: the member references the
+# project's Workload Identity pool (PROJECT.svc.id.goog), which does not exist
+# until a cluster with Workload Identity has been created. Without this,
+# Pulumi creates the binding in parallel with the cluster and IAM rejects it
+# with "Identity Pool does not exist" - and since Pulumi infers dependencies
+# from data flow, a member string built from a plain f-string carries no
+# reference to the cluster for it to infer.
 gcp.serviceaccount.IAMMember(
     "model-reader-workload-identity",
     service_account_id=model_reader.name,
     role="roles/iam.workloadIdentityUser",
     member=f"serviceAccount:{PROJECT}.svc.id.goog[{NAMESPACE}/vllm]",
+    opts=pulumi.ResourceOptions(depends_on=[cluster]),
 )
 
 
@@ -178,13 +187,27 @@ gcp.serviceaccount.IAMMember(
 # same in CI; the token is refreshed on every run.
 client_config = gcp.organizations.get_client_config()
 
+
+def _ca_certificate(master_auth) -> str:
+    """Read the cluster CA out of master_auth however the engine hands it over.
+
+    gcp.container.ClusterMasterAuth subclasses dict and keys it in snake_case,
+    but inside an apply the engine can pass a plain dict instead of the typed
+    class, where attribute access fails - so read it as a mapping and accept
+    either casing. Worth noting this only surfaces once the cluster exists:
+    while it is being created the value is unknown, Pulumi skips the apply
+    body entirely, and `pulumi preview` reports no problem.
+    """
+    return master_auth.get("cluster_ca_certificate") or master_auth["clusterCaCertificate"]
+
+
 kubeconfig = pulumi.Output.all(cluster.name, cluster.endpoint, cluster.master_auth).apply(
     lambda args: f"""apiVersion: v1
 kind: Config
 clusters:
 - cluster:
     server: https://{args[1]}
-    certificate-authority-data: {args[2].cluster_ca_certificate}
+    certificate-authority-data: {_ca_certificate(args[2])}
   name: {args[0]}
 contexts:
 - context:
@@ -243,6 +266,15 @@ vllm = k8s.apps.v1.Deployment(
             "metadata": {"labels": vllm_labels},
             "spec": {
                 "service_account_name": "vllm",
+                # Kubernetes otherwise injects a Docker-link-style env var per
+                # Service in the namespace - and the Service in front of this
+                # pod is named "vllm", which yields
+                # VLLM_PORT=tcp://<clusterIP>:8000. That collides with vLLM's
+                # own VLLM_PORT setting, and the server exits: "VLLM_PORT
+                # 'tcp://...' appears to be a URI". Service links are legacy
+                # compatibility nobody here uses, so turn them off rather than
+                # rename the Service and lose the obvious DNS name.
+                "enable_service_links": False,
                 "node_selector": {"cloud.google.com/gke-accelerator": "nvidia-l4"},
                 "tolerations": [
                     {
@@ -372,6 +404,9 @@ gateway = k8s.apps.v1.Deployment(
         "template": {
             "metadata": {"labels": gateway_labels},
             "spec": {
+                # Same reasoning as the vLLM pod: no legacy service-link env
+                # vars, so no Service name can collide with app config.
+                "enable_service_links": False,
                 "node_selector": {"workload": "system"},
                 # Spread replicas across nodes so a node scale-down cannot
                 # take out the whole tier.
