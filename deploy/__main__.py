@@ -545,9 +545,23 @@ gateway_service = k8s.core.v1.Service(
         "type": "LoadBalancer" if EXPOSE_PUBLICLY else "ClusterIP",
         **({"external_traffic_policy": "Local"} if EXPOSE_PUBLICLY else {}),
         "selector": gateway_labels,
-        "ports": [{"name": "http", "port": 80 if EXPOSE_PUBLICLY else 8080, "target_port": "http"}],
+        # Port 80 in both modes so the public URL needs no port suffix and
+        # in-cluster callers use one address either way. The container still
+        # listens on 8080; targetPort bridges them.
+        "ports": [{"name": "http", "port": 80, "target_port": "http"}],
     },
-    opts=ns_opts,
+    opts=pulumi.ResourceOptions(
+        provider=k8s_provider,
+        depends_on=[namespace],
+        # Kubernetes merges port lists by port number, so editing the port
+        # adds a second entry instead of replacing the first and the Service
+        # is rejected for a duplicate port name. Replacing sidesteps the
+        # merge; a Service is cheap to recreate (the load balancer IP is
+        # reallocated, which is why the URL is an output rather than a
+        # promise).
+        replace_on_changes=["spec.ports"],
+        delete_before_replace=True,
+    ),
 )
 
 # The gateway tier is the only thing worth horizontally scaling here: vLLM is

@@ -73,7 +73,7 @@ spec:
     - "--target"
     - "gateway"
     - "--base-url"
-    - "http://gateway.$NAMESPACE.svc.cluster.local:8080"
+    - "http://gateway.$NAMESPACE.svc.cluster.local"
     - "--out-dir"
     - "-"$args_yaml
     resources:

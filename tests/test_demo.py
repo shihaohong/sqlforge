@@ -185,6 +185,25 @@ class TestTokenAndLimits:
 
 
 class TestCompare:
+    def test_missing_credentials_disable_the_comparison_without_a_500(self, monkeypatch):
+        """The SDK raises TypeError - not AnthropicError - with no credential."""
+
+        class Unauthenticated:
+            def __init__(self, model: str):
+                raise TypeError("Could not resolve authentication method")
+
+        monkeypatch.setattr("text2sql.client.AnthropicClient", Unauthenticated)
+        with make_client() as client:
+            body = client.get("/v1/demo/schemas")
+            assert body.status_code == 200
+            assert body.json()["comparison_available"] is False
+
+            resp = client.post(
+                "/v1/demo/compare",
+                json={"db_id": "concert_singer", "question": "how many singers?"},
+            )
+            assert resp.status_code == 503
+
     def test_reports_503_when_no_credential_is_configured(self, client, monkeypatch):
         # The page must degrade to the local model rather than break.
         client.app.state.claude = None

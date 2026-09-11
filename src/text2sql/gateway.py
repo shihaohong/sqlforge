@@ -249,14 +249,28 @@ def create_app(settings: Settings | None = None, upstream: httpx.AsyncClient | N
         import anthropic
 
         if not hasattr(app.state, "claude"):
+            # An empty value is not a credential, and leaving it set makes the
+            # SDK refuse to look anywhere else. Kubernetes hands over an empty
+            # string when the Secret key is blank, which is how "no key
+            # configured" reaches this process.
+            if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+
             from .client import AnthropicClient
 
-            client = AnthropicClient(model=settings.claude_model)
+            # Construction and the probe share one handler: depending on the
+            # SDK version a missing credential surfaces at either point.
             try:
+                client = AnthropicClient(model=settings.claude_model)
                 client._client.models.list(limit=1)
-            except anthropic.AnthropicError as e:
-                console_hint = "set ANTHROPIC_API_KEY for the comparison"
-                print(f"claude comparison disabled: {type(e).__name__}; {console_hint}")
+            # TypeError, and not only AnthropicError: with no resolvable
+            # credential the SDK raises a plain TypeError from header
+            # validation, which is not part of its error hierarchy.
+            except (anthropic.AnthropicError, TypeError) as e:
+                print(
+                    f"claude comparison disabled ({type(e).__name__}):"
+                    " set ANTHROPIC_API_KEY to enable it"
+                )
                 client = None
             app.state.claude = client
         return app.state.claude

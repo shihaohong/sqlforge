@@ -197,7 +197,7 @@ def demo_router(assets: DemoAssets, schemas, claude_factory, guard) -> APIRouter
             text, usage = await run_in_threadpool(
                 client.complete_with_usage, build_messages(schema, req.question)
             )
-        except anthropic.AnthropicError as e:
+        except (anthropic.AnthropicError, TypeError) as e:
             # The paid path failing must not take the page down: the local
             # model's answer is still worth showing on its own.
             raise HTTPException(503, f"comparison failed: {type(e).__name__}") from e
