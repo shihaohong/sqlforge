@@ -56,9 +56,13 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+      # Resolving the IaC lockfile is itself the check here: the deploy
+      # project is separate from the application's precisely so the
+      # infrastructure program does not drag torch along, and a broken
+      # resolution should not wait to be discovered by an apply.
       - run: uv sync --frozen
-      # A syntax or import error in the Pulumi program should not wait to be
-      # discovered by an apply. A full `pulumi preview` would need cloud
-      # credentials, so this checks what it can without them.
+      # A full `pulumi preview` needs cloud credentials, so this verifies what
+      # it can without them. Linting deploy/ is not repeated here: the python
+      # job runs ruff from the repository root, which already covers it (and
+      # ruff is not a dependency of this project).
       - run: uv run python -c "import ast, pathlib; ast.parse(pathlib.Path('__main__.py').read_text())"
-      - run: uv run ruff check .
