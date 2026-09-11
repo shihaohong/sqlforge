@@ -52,6 +52,10 @@ More generally, when a library writes a version-specific name into an artifact, 
 **Lesson:** catch the library's base error class (`SqlglotError`) at a validation boundary, not the one exception you happened to see in testing.
 Anything a model can emit will eventually be emitted, so the boundary has to be total: for every library used on untrusted input, find its error base class and handle that.
 
+**And the base class is not always enough.** The same mistake recurred later with the Anthropic SDK: given no resolvable credential it raises a plain `TypeError` from header validation, which is not part of `anthropic.AnthropicError` at all, so a handler catching the library's own hierarchy still returned a 500.
+A library's declared error hierarchy covers the errors it *means* to raise; argument and configuration mistakes arrive as builtins.
+For an optional dependency whose absence must degrade rather than fail, handle the builtins too and wrap construction as well as use - either can be where it surfaces.
+
 ## Load-test where the service lives
 
 Driving a load test from a laptop through an SSH tunnel measures the tunnel: home-network RTT and a single multiplexed TCP connection cap throughput long before the GPU does.
@@ -177,3 +181,30 @@ On a single box - every earlier milestone - that default was exactly right, so t
 **Lesson:** configuration that is only exercised in one topology is untested configuration, and a default that coincides with the correct value is the most effective way to hide a broken path.
 Test the wiring itself (set the env, invoke the entrypoint, assert what reached the settings object) rather than trusting that a value present in the environment must have been read.
 The tell here was the mismatch between two facts that could not both be true: the address in the environment was reachable, and the process could not reach its configured address.
+
+
+## Configuration read in one place and rebuilt in another
+
+**Symptom, twice.** First: a gateway pod whose `SQLFORGE_UPSTREAM` was correct, whose upstream was reachable from inside that very pod, and which still could not connect - it had never read the environment.
+Then, after that was fixed: a public endpoint serving data with no token, on a deployment whose token was correctly set in a Kubernetes Secret and correctly present in the container's environment.
+
+**Cause.** The second one is the instructive one. The entrypoint read the environment into its option defaults, then built the settings object from its CLI flags:
+
+```python
+settings = Settings(upstream_url=upstream, model=model, timeout_s=timeout_s, ...)
+```
+
+The flags are a *subset* of the settings. Every field without a flag - the demo token, the rate limits, the asset paths - silently reverted to its dataclass default, and the default token is empty, which means no authentication.
+
+**Lesson:** override configuration, never rebuild it. `dataclasses.replace(defaults, **explicit_overrides)` keeps everything the caller did not speak to; a constructor call enumerates, and an enumeration silently drops whatever was added later.
+The security lesson is sharper than the mechanical one: a field whose default is "off" fails open, so the safe default for a credential check is to refuse when unconfigured, or to assert at startup that a public deployment has a token.
+Both bugs were invisible in tests that checked the parts and absent from tests of the wiring - so test the wiring: set the environment, invoke the entrypoint, assert what actually reached the settings object.
+
+## Kubernetes merges list fields, so editing one can duplicate it
+
+**Symptom:** changing a Service's port from 8080 to 80 was rejected with `spec.ports[1].name: Duplicate value: "http"` - an error about a second port that the manifest does not contain.
+
+**Cause:** Kubernetes merges lists like `spec.ports` by a merge key (the port number), so a changed port number reads as *an addition*, leaving the old entry in place. Two entries then share a port name, which is invalid.
+
+**Lesson:** for list fields keyed by value - ports, container env, volume mounts - an edit is an add unless the resource is replaced.
+Mark such fields for replacement in the IaC (`replace_on_changes=["spec.ports"]`, `delete_before_replace=True`) rather than discovering it as a validation error, and remember the cost of replacing: a recreated LoadBalancer Service gets a new external IP, so treat that address as an output to read, never a constant to hard-code.

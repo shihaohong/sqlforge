@@ -147,14 +147,22 @@ Operational notes (details in [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)): zonal
 A demo neither moves the headline numbers nor makes them more trustworthy, so it does not fit the rule above.
 It is here because it *communicates* them: the project's argument is an economic one, and a side-by-side you can click is a far better carrier for it than a table.
 
-- [ ] Side-by-side demo page: pick a database, ask a question, watch the fine-tuned 3B stream its SQL, see the query execute against the real sqlite file, and see whether the rows match the gold query - with Claude Haiku 4.5 answering the same question beside it, each labelled with measured latency and $/query.
-- [ ] `GET /v1/demo/schemas`, `POST /v1/demo/execute`, `POST /v1/demo/compare` on the existing gateway; the local model streams through the existing `/v1/sql/stream`, which until now had no consumer and so had never been exercised against a browser.
-- [ ] Bundle the sample databases: 19 of the 20 dev databases total ~1MB (`wta_1` alone is 105MB and is excluded), so live execution costs the image almost nothing.
-- [ ] Vite + React + Tailwind, built in a Dockerfile stage and served by the gateway itself through `StaticFiles` - one container, one URL, no CORS, no second service.
-- [ ] Public behind a shared token and rate limits: per-IP limits, a hard daily cap, and a separate tighter cap on the Claude path since every call there costs money. An unauthenticated GPU on the internet is not acceptable.
-- [ ] Execution safety on top of the existing SELECT-only guardrail: read-only connections, a short statement timeout, and a row cap.
+- [x] Side-by-side demo page (`web/`): pick a database, ask a question, watch the fine-tuned 3B stream its SQL, see the query execute against the real sqlite file, and see whether the rows match the gold query - with Claude Haiku 4.5 answering the same question beside it, each labelled with measured latency and $/query.
+- [x] `GET /v1/demo/schemas`, `POST /v1/demo/execute`, `POST /v1/demo/compare` on the existing gateway; the local model streams through the existing `/v1/sql/stream`, which until now had no consumer and so had never been exercised against a browser.
+- [x] Bundled sample databases: 19 of the 20 dev databases, 0.9MB in total (`wta_1` alone is 105MB and is excluded, and the page only offers what it ships).
+- [x] Vite + React + Tailwind, built in a Dockerfile stage and served by the gateway itself through `StaticFiles` - one container, one origin, no CORS, no second service. Series colors come from a validated palette (worst-pair CVD delta-E 26.8) and the correctness verdict always pairs its status color with an icon and a word.
+- [x] Public behind a shared token and rate limits, verified against the live URL: no token and a wrong token both get 401 on every inference and demo route, while the page itself stays open; 12 requests/min per IP with a burst of 6, a 2000/day cap, and a separate 4/min, 200/day allowance for the paid Claude path.
+- [x] Execution safety on top of the existing SELECT-only guardrail: read-only connections, a 5s statement timeout, and a 50-row cap, with the guardrail re-checked server-side because `/v1/demo/execute` is reachable on its own.
+- [x] Playwright drives the real page, in a real browser, against both a local gateway and the public URL - the only test that exercises SSE the way a browser does.
+- [ ] Claude comparison on the public deployment: needs an `ANTHROPIC_API_KEY` in the Secret. Until one is set the page degrades to the local model and says the comparison is switched off (the `ant auth login` credential that the M0 baselines used is a developer credential and cannot authenticate a pod).
 
-Exit criteria: a public URL where a stranger with the token can ask a question and watch both engines answer, with correctness and cost shown.
+Exit criteria: a public URL where a stranger with the token can ask a question and watch both engines answer, with correctness and cost shown. **Met for the local model; the Claude column is one Secret value away.**
+
+Measured live through the public load balancer: 200ms end to end for "What are the names of the stadiums without any concerts?", correct SQL, rows matching the gold query. Locally against the same cluster model with the comparison enabled: 467ms vs Haiku's 1017ms on the same question, both correct, $0.0032 vs $0.5890 per 1k queries - 184x.
+
+Two bugs worth recording, both found only by deploying:
+1. **An unauthenticated public endpoint.** `serve_gateway.py` built a fresh `Settings()` from its CLI flags, which reverted every field without a flag - including `demo_token` and the rate limits - to dataclass defaults, and an empty token means no authentication at all. It now `replace()`s over the environment-derived defaults. This is the second bug from the same root as M4's `Settings.from_env()` one: configuration read in one place and rebuilt in another.
+2. **A 500 instead of graceful degradation.** With `ANTHROPIC_API_KEY` set to the empty string, the SDK raises a plain `TypeError` from header validation rather than anything in its own error hierarchy, so the handler missed it and `/v1/demo/schemas` returned 500. Exactly the `sqlglot.TokenError` mistake from M3, in a different library.
 
 ### M6: Hardening and writeup
 

@@ -1,8 +1,8 @@
 /**
  * End-to-end test of the demo page against a running gateway.
  *
- *   npx playwright test                      # expects a gateway on :8080
- *   BASE_URL=http://localhost:8080 npx playwright test
+ *   npx playwright test                                  # gateway on :8080
+ *   BASE_URL=http://1.2.3.4 DEMO_TOKEN=… npx playwright test
  *
  * This is the only test that exercises the streaming path in a browser, which
  * is where SSE actually has to work. It also captures the screenshots used to
@@ -11,8 +11,15 @@
 
 import { expect, test } from "@playwright/test";
 
+/** The page takes its token from the query string on first load.
+ *  Note this cannot live in `baseURL`: page.goto("/") resolves against the
+ *  origin and drops any query string the base URL carried. */
+const START = process.env.DEMO_TOKEN
+  ? `/?token=${encodeURIComponent(process.env.DEMO_TOKEN)}`
+  : "/";
+
 test("asks both engines and shows executed rows", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(START);
 
   await expect(page.getByRole("heading", { name: "SQLForge" })).toBeVisible();
   await expect(page.locator("select")).toBeVisible();
@@ -40,7 +47,7 @@ test("asks both engines and shows executed rows", async ({ page }) => {
 
 test("renders at a phone width", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+  await page.goto(START);
   await expect(page.getByRole("heading", { name: "SQLForge" })).toBeVisible();
   await page.screenshot({ path: "screenshots/03-mobile.png", fullPage: true });
 });

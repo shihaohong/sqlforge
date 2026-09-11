@@ -2,7 +2,7 @@
 
 > **Status: work in progress.**
 > This is a personal learning project exploring the full lifecycle of a production ML system: fine-tuning, quantization, serving, and benchmarking.
-> Baselines, the eval harness, the QLoRA fine-tune, 4-bit quantization, and the served benchmark are done; the Kubernetes deployment is written and previewing clean but not yet applied, and the writeup is still ahead.
+> Baselines, the eval harness, the QLoRA fine-tune, 4-bit quantization, the served benchmark, the Kubernetes deployment, and an interactive demo are done; CI regression gating and the writeup are still ahead.
 > Expect rough edges and unfinished milestones - see [PLAN.md](PLAN.md) for current state, and [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md) for what went wrong along the way.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
@@ -169,7 +169,28 @@ scripts/gcp/vm.sh bench --target vllm                     # same load, bypassing
 scripts/gcp/vm.sh results                                 # pull runs/loadtest-*.json back
 ```
 
-## Deploying to Kubernetes (M4, in progress)
+## The demo
+
+A side-by-side page served by the gateway itself: pick one of 19 bundled Spider databases, ask a question, and watch the fine-tuned 3B stream its SQL while Claude Haiku 4.5 answers the same question beside it.
+Both answers are then executed against the real sqlite file and compared to the benchmark's gold query, so "correct" means the rows matched - not that the SQL looked plausible.
+
+```bash
+uv run scripts/build_serving_assets.py          # bundles schemas, questions, gold SQL, databases
+cd web && npm install && npm run build          # the gateway serves web/dist through StaticFiles
+uv run --group serve scripts/serve_gateway.py   # then open http://localhost:8080
+```
+
+The page is public but every inference route is behind a shared token and rate limits: 12 requests/min per IP with a burst of 6, a daily cap, and a separate much smaller allowance for the Claude path because each of those calls costs money.
+A second *service* token is exempt from the limits, which is what the eval harness and load generator use - the demo token necessarily ships to browsers and cannot be trusted with a GPU.
+Generated SQL is re-checked by the guardrail server-side, then run on a read-only connection with a 5s timeout and a 50-row cap.
+
+`npx playwright test` drives the real page in a real browser against either a local gateway or the deployed URL, and captures the screenshots used to review layout:
+
+```bash
+cd web && BASE_URL=http://<ip> DEMO_TOKEN=<token> npx playwright test
+```
+
+## Deploying to Kubernetes
 
 The whole serving stack is one Pulumi program: a zonal GKE cluster, a small CPU pool for the gateway, and a `g2-standard-8` GPU pool that **autoscales 0-1 across every zone in the region**, so an idle cluster costs only the CPU pool and a pending vLLM pod is what brings the expensive node up.
 
@@ -189,11 +210,18 @@ Then bring the stack up and benchmark it from inside the cluster:
 ```bash
 cd deploy
 pulumi login gs://<bucket>/pulumi-state
+pulumi config set --secret sqlforge:demoToken "$(python3 -c 'import secrets;print(secrets.token_urlsafe(18))')"
+pulumi config set --secret sqlforge:serviceToken "$(python3 -c 'import secrets;print(secrets.token_urlsafe(24))')"
+pulumi config set --secret sqlforge:anthropicApiKey sk-ant-…   # optional; enables the comparison
+pulumi config set sqlforge:expose true                         # LoadBalancer instead of ClusterIP
 pulumi up
+pulumi stack output demo_url
 
 ./bench_in_cluster.sh --concurrency 1,8,32,64 --duration 30
 pulumi destroy            # GPU pool scales to zero on its own; this removes the rest
 ```
+
+A from-scratch `pulumi up` builds all 17 resources in one pass in about 26 minutes, most of which is the GPU node's cold start: ~90s for the node and its driver, 25s to pull the 2.1GB model from GCS, and 3m12s to pull the 8.6GB vLLM image.
 
 `deploy/bench_in_cluster.sh` runs the same load-test driver as a pod on the CPU pool, so it measures Service -> gateway -> vLLM rather than the path from a laptop to the cluster.
 Both tiers are scraped by Managed Prometheus, including vLLM's `vllm:num_requests_waiting`.
@@ -209,6 +237,7 @@ scripts/            entrypoints: run_eval.py, train.py, quantize.py, serve_gatew
 tests/              unit tests: eval harness, SQL guardrails, gateway (mocked vLLM upstream)
 configs/            training and serving configs
 deploy/             Pulumi program (GKE cluster, node pools, workloads), gateway Dockerfile, in-cluster benchmark
+web/                the demo page (Vite + React + Tailwind) and its Playwright test
 data/               datasets, rendered SFT files, serving assets (gitignored)
 runs/               eval outputs (per-example jsonl + summary json) and load-test results
 PLAN.md             milestone plan, decision log, detailed results
