@@ -180,6 +180,9 @@ cd web && npm install && npm run build          # the gateway serves web/dist th
 uv run --group serve scripts/serve_gateway.py   # then open http://localhost:8080
 ```
 
+It is served over HTTPS: an ingress-nginx controller terminates TLS with a Let's Encrypt certificate that cert-manager renews, on a `<ip>.sslip.io` hostname - which resolves an IP embedded in the name, so no domain or DNS zone is needed for a real certificate.
+Streaming needs `proxy-buffering: off` on the controller, or nginx holds the whole response and the token-by-token effect is lost.
+
 The page is public but every inference route is behind a shared token and rate limits: 12 requests/min per IP with a burst of 6, a daily cap, and a separate much smaller allowance for the Claude path because each of those calls costs money.
 A second *service* token is exempt from the limits, which is what the eval harness and load generator use - the demo token necessarily ships to browsers and cannot be trusted with a GPU.
 Generated SQL is re-checked by the guardrail server-side, then run on a read-only connection with a 5s timeout and a 50-row cap.

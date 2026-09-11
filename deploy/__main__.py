@@ -39,8 +39,12 @@ GATEWAY_MIN_REPLICAS = config.require_int("gatewayMinReplicas")
 GATEWAY_MAX_REPLICAS = config.require_int("gatewayMaxReplicas")
 
 # Public exposure is opt-in: with expose=false the gateway stays a ClusterIP
-# and the demo is reachable only through `kubectl port-forward`.
+# reachable only through `kubectl port-forward`. With it on, an ingress-nginx
+# controller holds the reserved address and terminates TLS with a Let's
+# Encrypt certificate that cert-manager obtains and renews.
 EXPOSE_PUBLICLY = config.get_bool("expose") or False
+#: Notification address for the ACME account (certificate expiry warnings).
+ACME_EMAIL = config.get("acmeEmail") or "shihaohong94@gmail.com"
 # Secrets, so they are encrypted in the stack state rather than sitting in a
 # config file. The Anthropic key is optional - without it the page serves the
 # local model alone and says the comparison is switched off.
@@ -534,16 +538,13 @@ gateway = k8s.apps.v1.Deployment(
     ),
 )
 
-# A network load balancer when exposed: the demo token and the rate limits are
-# what protect the GPU, so the only thing this adds is reachability.
-# externalTrafficPolicy=Local preserves the client IP, which the per-IP rate
-# limiter needs to mean anything.
+# Always internal: the ingress controller below is what faces the internet,
+# so there is exactly one public entry point and it is the one doing TLS.
 gateway_service = k8s.core.v1.Service(
     "gateway",
     metadata={"name": "gateway", "namespace": NAMESPACE},
     spec={
-        "type": "LoadBalancer" if EXPOSE_PUBLICLY else "ClusterIP",
-        **({"external_traffic_policy": "Local"} if EXPOSE_PUBLICLY else {}),
+        "type": "ClusterIP",
         "selector": gateway_labels,
         # Port 80 in both modes so the public URL needs no port suffix and
         # in-cluster callers use one address either way. The container still
@@ -622,13 +623,134 @@ pulumi.export("kubeconfig", pulumi.Output.secret(kubeconfig))
 pulumi.export("cluster_name", cluster.name)
 pulumi.export("cluster_zone", cluster.location)
 pulumi.export("gpu_pool_max_nodes", pulumi.Output.from_input(GPU_MAX_NODES))
-pulumi.export("gateway_service", gateway_service.metadata["name"])
+
+# --- Public HTTPS ------------------------------------------------------------
+
 if EXPOSE_PUBLICLY:
-    pulumi.export(
-        "demo_url",
-        gateway_service.status.apply(
-            lambda status: f"http://{status['load_balancer']['ingress'][0]['ip']}"
-            if status and status.get("load_balancer", {}).get("ingress")
-            else "pending"
+    # The address is reserved outside this program and deliberately survives
+    # `pulumi destroy`: it is the hostname, so releasing it would invalidate
+    # every link that has been shared. (An unattached reserved address does
+    # bill a few dollars a month - release it by hand when done for good.)
+    gateway_address = gcp.compute.get_address(name="sqlforge-gateway", region=REGION)
+    # sslip.io resolves an IP embedded in the hostname, so this needs no DNS
+    # zone of our own while still being a real name that a certificate can be
+    # issued for.
+    demo_host = f"{gateway_address.address}.sslip.io"
+
+    ingress_nginx = k8s.helm.v3.Release(
+        "ingress-nginx",
+        chart="ingress-nginx",
+        version="4.11.3",
+        namespace="ingress-nginx",
+        create_namespace=True,
+        repository_opts={"repo": "https://kubernetes.github.io/ingress-nginx"},
+        values={
+            "controller": {
+                "replicaCount": 1,
+                "nodeSelector": {"workload": "system"},
+                "service": {
+                    # Claims the reserved address, so the public hostname is
+                    # stable across rebuilds of the cluster.
+                    "loadBalancerIP": gateway_address.address,
+                    # Preserves the client IP, which is what the per-IP rate
+                    # limiter keys on. (nginx also sets X-Forwarded-For, which
+                    # the gateway prefers.)
+                    "externalTrafficPolicy": "Local",
+                },
+                "config": {
+                    # Server-sent events must not be buffered: with buffering
+                    # on, nginx holds the whole response and the demo's
+                    # token-by-token streaming arrives as one lump at the end.
+                    "proxy-buffering": "off",
+                    "proxy-read-timeout": "300",
+                },
+                "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}},
+            }
+        },
+        opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[system_pool]),
+    )
+
+    cert_manager = k8s.helm.v3.Release(
+        "cert-manager",
+        chart="cert-manager",
+        version="v1.16.2",
+        namespace="cert-manager",
+        create_namespace=True,
+        repository_opts={"repo": "https://charts.jetstack.io"},
+        # crds.enabled only: the chart renamed this from installCRDs and
+        # refuses outright if both are set, so "pass both and let Helm ignore
+        # the one it does not read" does not work here.
+        values={
+            "crds": {"enabled": True},
+            "nodeSelector": {"workload": "system"},
+        },
+        opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[system_pool]),
+    )
+
+    issuer = k8s.apiextensions.CustomResource(
+        "letsencrypt",
+        api_version="cert-manager.io/v1",
+        kind="ClusterIssuer",
+        metadata={"name": "letsencrypt"},
+        spec={
+            "acme": {
+                "server": "https://acme-v02.api.letsencrypt.org/directory",
+                "email": ACME_EMAIL,
+                "privateKeySecretRef": {"name": "letsencrypt-account-key"},
+                # HTTP-01 over the same ingress that serves the site: no DNS
+                # credentials needed, which is the whole point of sslip.io
+                # here.
+                "solvers": [{"http01": {"ingress": {"class": "nginx"}}}],
+            }
+        },
+        opts=pulumi.ResourceOptions(provider=k8s_provider, depends_on=[cert_manager]),
+    )
+
+    gateway_ingress = k8s.networking.v1.Ingress(
+        "gateway",
+        metadata={
+            "name": "gateway",
+            "namespace": NAMESPACE,
+            "annotations": {
+                # cert-manager watches this and fills the TLS secret in.
+                "cert-manager.io/cluster-issuer": "letsencrypt",
+                "nginx.ingress.kubernetes.io/proxy-buffering": "off",
+                "nginx.ingress.kubernetes.io/proxy-read-timeout": "300",
+                "nginx.ingress.kubernetes.io/ssl-redirect": "true",
+            },
+        },
+        spec={
+            "ingress_class_name": "nginx",
+            "tls": [{"hosts": [demo_host], "secret_name": "gateway-tls"}],
+            "rules": [
+                {
+                    "host": demo_host,
+                    "http": {
+                        "paths": [
+                            {
+                                "path": "/",
+                                "path_type": "Prefix",
+                                "backend": {
+                                    "service": {
+                                        "name": "gateway",
+                                        "port": {"number": 80},
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        opts=pulumi.ResourceOptions(
+            provider=k8s_provider,
+            depends_on=[gateway_service, ingress_nginx, issuer],
         ),
     )
+
+    pulumi.export("demo_url", f"https://{demo_host}")
+    pulumi.export("demo_ip", gateway_address.address)
+    pulumi.export("ingress", gateway_ingress.metadata["name"])
+
+
+pulumi.export("gateway_service", gateway_service.metadata["name"])

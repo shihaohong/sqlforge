@@ -208,3 +208,16 @@ Both bugs were invisible in tests that checked the parts and absent from tests o
 
 **Lesson:** for list fields keyed by value - ports, container env, volume mounts - an edit is an add unless the resource is replaced.
 Mark such fields for replacement in the IaC (`replace_on_changes=["spec.ports"]`, `delete_before_replace=True`) rather than discovering it as a validation error, and remember the cost of replacing: a recreated LoadBalancer Service gets a new external IP, so treat that address as an output to read, never a constant to hard-code.
+
+## A real certificate without owning a domain
+
+**Problem:** a demo on a bare load-balancer IP is plain HTTP, so browsers warn - and any token in the URL crosses the network in cleartext, which is the part that actually matters.
+
+**What works:** wildcard-DNS services like `sslip.io` and `nip.io` resolve an IP embedded in the hostname, so `136.65.15.120.sslip.io` points at the load balancer with no DNS zone of your own.
+That is a real name, so Let's Encrypt will issue for it over HTTP-01 with cert-manager - no domain purchase, no DNS credentials, and automatic renewal.
+
+**Worth knowing:**
+- **Reserve the address first.** The hostname *contains* the IP, so an ephemeral address means the URL changes under you. Promote the existing one in place (`gcloud compute addresses create NAME --addresses <current-ip>`) to keep links working, and remember an unattached reserved address bills a few dollars a month.
+- **Move the address between load balancers in two steps.** One apply that both releases the address from the old forwarding rule and claims it for the new one can be ordered either way, and the wrong order fails with "address already in use".
+- **Turn off proxy buffering for server-sent events.** With nginx's default buffering the stream is held and delivered as a single lump at the end - the endpoint still "works", the tokens still arrive, and the streaming effect is silently gone. Verify by timestamping frames, not by checking the response body.
+- **`installCRDs` vs `crds.enabled`.** Passing both spellings of a renamed Helm value, expecting the chart to ignore the one it does not read, fails on cert-manager - it checks for the deprecated key and refuses. Charts can reject values, so "set both and let it sort itself out" is not a safe migration strategy.
