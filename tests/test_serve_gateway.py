@@ -66,6 +66,12 @@ def test_reads_every_setting_from_the_environment(monkeypatch):
             "SQLFORGE_TIMEOUT_S": "17",
             "SQLFORGE_MAX_TOKENS": "128",
             "SQLFORGE_SCHEMA_CACHE": "/app/data/serving/dev.schemas.json",
+            # Deliberately included: these have no CLI flag, so they only
+            # arrive if the entrypoint keeps the environment-derived defaults
+            # instead of building a fresh Settings from its flags.
+            "SQLFORGE_DEMO_TOKEN": "public-token",
+            "SQLFORGE_SERVICE_TOKEN": "service-token",
+            "SQLFORGE_DAILY_LIMIT": "77",
         },
     )
     settings = invoke()
@@ -74,6 +80,17 @@ def test_reads_every_setting_from_the_environment(monkeypatch):
     assert settings.timeout_s == 17.0
     assert settings.max_tokens == 128
     assert str(settings.schema_cache) == "/app/data/serving/dev.schemas.json"
+    assert settings.demo_token == "public-token"
+    assert settings.service_token == "service-token"
+    assert settings.daily_limit == 77
+
+
+def test_a_flag_does_not_discard_settings_that_have_no_flag(monkeypatch):
+    """The public endpoint's token must survive any combination of flags."""
+    invoke, _ = load_cli(monkeypatch, {"SQLFORGE_DEMO_TOKEN": "public-token"})
+    settings = invoke(["--upstream", "http://localhost:9/v1", "--port", "9999"])
+    assert settings.upstream_url == "http://localhost:9/v1"
+    assert settings.demo_token == "public-token"
 
 
 def test_explicit_flag_overrides_the_environment(monkeypatch, upstream):

@@ -7,6 +7,7 @@ which serializes work on the single GPU anyway), and one process keeps
 Prometheus counters in a single registry instead of splitting them per worker.
 """
 
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -37,7 +38,13 @@ def main(
     schema_cache: str = str(DEFAULTS.schema_cache),
     log_level: str = "info",
 ) -> None:
-    settings = Settings(
+    # replace() over the env-derived defaults, not a fresh Settings(): the
+    # flags below are a subset of the settings, and constructing a new object
+    # silently reverted everything without a flag - tokens, rate limits, demo
+    # asset paths - to dataclass defaults. An empty demo token means an
+    # unauthenticated public endpoint, so this one mattered.
+    settings = replace(
+        DEFAULTS,
         upstream_url=upstream,
         model=model,
         timeout_s=timeout_s,
