@@ -155,9 +155,11 @@ It is here because it *communicates* them: the project's argument is an economic
 - [x] Public behind a shared token and rate limits, verified against the live URL: no token and a wrong token both get 401 on every inference and demo route, while the page itself stays open; 12 requests/min per IP with a burst of 6, a 2000/day cap, and a separate 4/min, 200/day allowance for the paid Claude path.
 - [x] Execution safety on top of the existing SELECT-only guardrail: read-only connections, a 5s statement timeout, and a 50-row cap, with the guardrail re-checked server-side because `/v1/demo/execute` is reachable on its own.
 - [x] Playwright drives the real page, in a real browser, against both a local gateway and the public URL - the only test that exercises SSE the way a browser does.
-- [ ] Claude comparison on the public deployment: needs an `ANTHROPIC_API_KEY` in the Secret. Until one is set the page degrades to the local model and says the comparison is switched off (the `ant auth login` credential that the M0 baselines used is a developer credential and cannot authenticate a pod).
+- [x] Claude comparison on the public deployment, via an `ANTHROPIC_API_KEY` in the Secret (the `ant auth login` credential the M0 baselines used is a developer credential and cannot authenticate a pod). Setting it exposed one more bug: environment from a `secretKeyRef` is injected at container start, so updating the Secret left the running pods with the old empty value and nothing in the Deployment spec changed to roll them. A hash of the secret values now rides in the pod template, which turns a credential change into a spec change.
 
-Exit criteria: a public URL where a stranger with the token can ask a question and watch both engines answer, with correctness and cost shown. **Met for the local model; the Claude column is one Secret value away.**
+Exit criteria: a public URL where a stranger with the token can ask a question and watch both engines answer, with correctness and cost shown. **M5 complete.**
+
+Live through the public HTTPS endpoint, same question to both: the fine-tuned 3B answered in **189ms** and Haiku 4.5 in **725ms**, both matching the gold rows, at **$0.0032 against $0.5490** per 1k queries - **172x**. The paid path's own budget is real too: a six-call burst gets `200 200 429 200 429 429`.
 
 Measured live through the public HTTPS endpoint: 83ms end to end for "How many singers are there?" and 200ms for "What are the names of the stadiums without any concerts?", correct SQL, rows matching the gold query. Locally against the same cluster model with the comparison enabled: 467ms vs Haiku's 1017ms on the same question, both correct, $0.0032 vs $0.5890 per 1k queries - 184x.
 

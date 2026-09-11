@@ -13,4 +13,6 @@ config:
   sqlforge:serviceToken:
     secure: v1:RMxoTN0Z8te6OyDl:pJ0Z0SoI8ttM6mLhkGTtRbljKw9UvRsL3ok57yyzSuUoeJjE0fZd3dCiICfImnpS
   sqlforge:expose: "true"
+  sqlforge:anthropicApiKey:
+    secure: v1:vVD1gBwiuuYe+QrM:7Kp3CYYRkgfxZbTDcEVLC8aMhzZtMnNOsJU65PpwaL7wNwBefKtCW4d2/TIWu0JXHX4nzJedCHLcPkBZ2hbgafFGFgVr9rKw34bel709W5SwFMmL5YFN/iLIpM/5S6RE9pr1J/OrNfW9CroS6MBmFySsWKdTJAmc88R7Rw==
 encryptionsalt: v1:Isg2lx+iOpc=:v1:3qDT08xgqz04vAvn:v3vC5LOySz0S58kbzgwLeoPR3LO/OQ==

@@ -221,3 +221,19 @@ That is a real name, so Let's Encrypt will issue for it over HTTP-01 with cert-m
 - **Move the address between load balancers in two steps.** One apply that both releases the address from the old forwarding rule and claims it for the new one can be ordered either way, and the wrong order fails with "address already in use".
 - **Turn off proxy buffering for server-sent events.** With nginx's default buffering the stream is held and delivered as a single lump at the end - the endpoint still "works", the tokens still arrive, and the streaming effect is silently gone. Verify by timestamping frames, not by checking the response body.
 - **`installCRDs` vs `crds.enabled`.** Passing both spellings of a renamed Helm value, expecting the chart to ignore the one it does not read, fails on cert-manager - it checks for the deprecated key and refuses. Charts can reject values, so "set both and let it sort itself out" is not a safe migration strategy.
+
+## Updating a Secret does not restart anything
+
+**Symptom:** the API key was correct in the Kubernetes Secret, `pulumi up` reported success, and the application still behaved as though no key were configured - for as long as the pods kept running.
+
+**Cause:** environment variables from a `secretKeyRef` are resolved when the container starts. Changing the Secret changes nothing for a running pod, and because the Deployment's own spec was untouched, there was nothing to trigger a rollout either. (Secrets mounted as *files* do get updated in place, eventually - env vars never do.)
+
+**Lesson:** make the credential part of the pod template so a change to it is a change to the spec:
+
+```python
+checksum = Output.all(*secret_values).apply(lambda v: sha256("|".join(v).encode()).hexdigest()[:16])
+# ...then annotate the pod template with it
+```
+
+This is what Helm charts mean by `checksum/config`, and it belongs in the IaC rather than in a habit of running `kubectl rollout restart` after editing a Secret - an out-of-band restart is invisible to the next person and to the next apply.
+The general shape: when configuration lives outside the resource that consumes it, something has to tie the two together, or "applied" and "in effect" quietly diverge.

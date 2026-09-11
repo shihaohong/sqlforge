@@ -19,6 +19,8 @@ this program (see PLAN.md). Both outlive any cluster, and `pulumi destroy`
 should never be able to delete model weights or the image it deployed.
 """
 
+import hashlib
+
 import pulumi
 import pulumi_gcp as gcp
 import pulumi_kubernetes as k8s
@@ -427,6 +429,17 @@ gateway_secret = k8s.core.v1.Secret(
     opts=ns_opts,
 )
 
+# Environment from a secretKeyRef is injected when the container starts, so
+# updating the Secret changes nothing for pods already running - and the
+# Deployment spec is untouched, so nothing rolls them. Hashing the secret
+# into the pod template makes a credential change a spec change, which is
+# what actually triggers the rollout.
+secret_checksum = pulumi.Output.all(
+    DEMO_TOKEN,
+    SERVICE_TOKEN,
+    ANTHROPIC_API_KEY if ANTHROPIC_API_KEY is not None else pulumi.Output.from_input(""),
+).apply(lambda values: hashlib.sha256("|".join(values).encode()).hexdigest()[:16])
+
 gateway = k8s.apps.v1.Deployment(
     "gateway",
     metadata={"name": "gateway", "namespace": NAMESPACE},
@@ -434,7 +447,10 @@ gateway = k8s.apps.v1.Deployment(
         "replicas": GATEWAY_MIN_REPLICAS,
         "selector": {"match_labels": gateway_labels},
         "template": {
-            "metadata": {"labels": gateway_labels},
+            "metadata": {
+                "labels": gateway_labels,
+                "annotations": {"sqlforge.dev/secret-checksum": secret_checksum},
+            },
             "spec": {
                 # Same reasoning as the vLLM pod: no legacy service-link env
                 # vars, so no Service name can collide with app config.
