@@ -113,9 +113,7 @@ class TestExecute:
         assert resp.json()["matches_gold"] is False
 
     def test_refuses_sql_the_guardrail_rejects(self, client):
-        resp = client.post(
-            "/v1/demo/execute", json={"db_id": DB_ID, "sql": "DROP TABLE singer"}
-        )
+        resp = client.post("/v1/demo/execute", json={"db_id": DB_ID, "sql": "DROP TABLE singer"})
         body = resp.json()
         assert resp.status_code == 200
         assert body["ok"] is False
@@ -187,7 +185,9 @@ class TestTokenAndLimits:
 
 
 class TestCompare:
-    def test_missing_credentials_disable_the_comparison_without_a_500(self, monkeypatch, make_client):
+    def test_missing_credentials_disable_the_comparison_without_a_500(
+        self, monkeypatch, make_client
+    ):
         """The SDK raises TypeError - not AnthropicError - with no credential."""
 
         class Unauthenticated:
