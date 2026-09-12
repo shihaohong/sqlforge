@@ -31,7 +31,7 @@ def load_cli(monkeypatch, env: dict[str, str]):
     spec.loader.exec_module(module)
 
     captured: dict = {}
-    monkeypatch.setattr(module.uvicorn, "run", lambda app, **kw: None)
+    monkeypatch.setattr(module.uvicorn, "run", lambda app, **_: None)
     monkeypatch.setattr(module, "create_app", lambda settings: captured.update(settings=settings))
 
     # The script exposes a plain function through typer.run(), so wrap it to

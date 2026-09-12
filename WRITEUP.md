@@ -158,6 +158,6 @@ Two of these were considered and consciously dropped, which is worth saying plai
 The short version: `uv sync`, download Spider, `uv run scripts/run_eval.py sanity` to prove the harness, then any of the baselines.
 Training and serving need one L4; `scripts/gcp/vm.sh` drives a single VM and `deploy/` brings up the Kubernetes stack with one `pulumi up`.
 
-Continuous integration runs lint, 101 tests, the frontend type-check and build, and the frozen prompt contract on every push.
+Continuous integration runs lint, 103 tests, the frontend type-check and build, and the frozen prompt contract on every push.
 The accuracy gate (`scripts/eval_gate.py`) runs real questions against the live endpoint and fails on a regression beyond 3 points, which is the only check that can see the class of bug described above.
 It is verified end to end in GitHub Actions: a dispatched run downloads the dataset, proves the harness scores gold-vs-gold at 100%, scores 200 dev examples against the deployed HTTPS endpoint, and reports the delta against the baseline in about 40 seconds.

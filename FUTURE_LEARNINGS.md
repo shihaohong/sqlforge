@@ -237,3 +237,27 @@ checksum = Output.all(*secret_values).apply(lambda v: sha256("|".join(v).encode(
 
 This is what Helm charts mean by `checksum/config`, and it belongs in the IaC rather than in a habit of running `kubectl rollout restart` after editing a Secret - an out-of-band restart is invisible to the next person and to the next apply.
 The general shape: when configuration lives outside the resource that consumes it, something has to tie the two together, or "applied" and "in effect" quietly diverge.
+
+
+## A test that skips is not a test that passes
+
+**Symptom:** 101 tests passed locally and CI reported "84 passed, 17 skipped" in green, for months of commits.
+
+**Cause:** the demo's tests needed sample databases rendered from a 841MB dataset the repository does not carry, so they were guarded with `pytest.mark.skipif`. On the author's machine the data is always there and the guard never fires. In CI it always fires, so the endpoints that execute model-written SQL - the guardrail re-check, the row cap, the statement timeout, the gold comparison, the token enforcement - were verified nowhere except the one machine that needed the verification least.
+
+**Lesson:** a skip guard silently converts "untested here" into "green", and it fires exactly where you are not looking.
+Build the fixture instead of guarding the test: a 4KB sqlite database created in a session fixture exercised every one of those endpoints and moved CI from 84 tests to 101.
+Keep the guard only for assertions that are genuinely about the absent data (that the real bundle excludes a 105MB database, that it carries 19), because those are claims about the dataset rather than about the code.
+
+The general check, worth running on any project: compare the test count CI reports against the count you get locally. A gap is a list of things you believe are covered and are not.
+
+## Auditing for code that was never wired up
+
+Finding one dependency that had been carried but never used prompted a sweep for others. The checks that found something, in the order they were worth running:
+
+- **Declared dependencies against actual imports.** Catches carried-but-unused packages. Allow for tools that are never imported (`ruff`, `vllm` as a CLI) and packages loaded indirectly (`bitsandbytes` via `BitsAndBytesConfig`, `accelerate` via a `Trainer`).
+- **Environment variables set by the deployment against those read by the application.** This is the one that matters most, and in both directions: a variable the manifest sets and the code ignores is a silent misconfiguration, which is exactly the bug that made a gateway dial `localhost` in production.
+- **Configuration keys declared against those read**, in both the application settings and the IaC config.
+- **Metrics defined against metrics incremented**, since a counter nobody increments is a dashboard that reads zero forever.
+- **The CI test count against the local one** (above).
+- Dead-code tools (`vulture`, `knip`) last: they find the least, and most of what they find is a false positive - a function passed as a callable rather than called reads as unused to a regex and to some analyzers.

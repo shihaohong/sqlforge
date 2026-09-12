@@ -80,7 +80,7 @@ Versions are the ones actually in the lockfiles, because "we use vLLM" stopped b
 | httpx 0.28 | the client to vLLM and the eval harness's transport | one library for sync and async, with streaming support the SSE path needs |
 | prometheus-client 0.26 | metrics | scraped by Managed Prometheus, no server to operate |
 | typer 0.27 + rich 15 | every script's CLI | consistent interfaces and readable tables for results that humans read |
-| pytest 9 + ruff 0.16 | 101 tests, lint and format | both run in CI on every push |
+| pytest 9 + ruff 0.16 | 103 tests, lint and format | both run in CI on every push |
 
 ### Frontend
 

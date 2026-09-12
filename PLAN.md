@@ -173,7 +173,7 @@ Two bugs worth recording, both found only by deploying:
 
 ### M6: Hardening and writeup
 
-- [x] **Fast CI on every push** (`.github/workflows/ci.yml`): ruff lint and format, 101 tests, the frontend type-check and build, and a syntax/lint pass over the Pulumi program. About two seconds of test time, so there is no reason to skip it.
+- [x] **Fast CI on every push** (`.github/workflows/ci.yml`): ruff lint and format, 103 tests, the frontend type-check and build, and a syntax/lint pass over the Pulumi program. About two seconds of test time, so there is no reason to skip it.
 - [x] **The prompt template is frozen by a test** (`tests/test_prompt_contract.py`). The weights were trained against those exact strings, and training, eval, serving and the demo all render through one function, so a reworded instruction or a stray newline moves every served prompt off the distribution the model was tuned on with no symptom but lower accuracy. The test states plainly that a failure means re-running the eval gate, not editing the expected value.
 - [x] **Eval regression gate** (`scripts/eval_gate.py`, `.github/workflows/eval-gate.yml`): scores a fixed prefix of the dev split against a live endpoint and fails if accuracy drops more than 3 points below `runs/eval-baseline.json`. Verified in both directions - it passes on an unchanged deployment (-1.0 pts) and exits 1 against a baseline simulating a 23-point regression.
 - [x] The gate is wired up and **verified running in GitHub Actions**, not just locally: a dispatched run downloads the dataset, proves the harness scores gold-vs-gold at 100%, then scores 200 dev examples against the live HTTPS endpoint with the rate-limit-exempt service token. End to end in about 40 seconds, result `68.0% baseline vs 67.0% this run, -1.0 pts, gate passed`.
@@ -236,7 +236,7 @@ uv sync --group serve        # on the serving box
 | Cold start from zero GPUs | ~6.5 min, dominated by an 8.6GB image pull |
 | Accuracy through the production path | 736/1034, identical to scoring vLLM directly |
 
-Fine-tuning cost about **$4** of L4 time. The eval harness, the prompt template, the guardrail, the gateway, the benchmark driver and the demo are all one codebase with 101 tests and a frozen prompt contract behind them, and the accuracy of the deployed service is now gated against a recorded baseline.
+Fine-tuning cost about **$4** of L4 time. The eval harness, the prompt template, the guardrail, the gateway, the benchmark driver and the demo are all one codebase with 103 tests and a frozen prompt contract behind them, and the accuracy of the deployed service is now gated against a recorded baseline.
 
 The honest summary: the fine-tune did not beat the API model on quality, and it was never going to at 3B. It got within 2.8 points, and at any real volume it serves those answers for a fraction of a percent of the price. Whether that trade is worth making is a product decision, and the point of the project was to produce numbers precise enough to make it with.
 

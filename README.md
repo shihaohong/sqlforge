@@ -271,7 +271,7 @@ FUTURE_LEARNINGS.md what broke and what to do differently next time
 ## Development
 
 ```bash
-uv run pytest -q                                  # 101 tests
+uv run pytest -q                                  # 103 tests, no dataset required
 uv run ruff check . && uv run ruff format --check src scripts tests
 cd web && npm run build                           # type-check + bundle the demo
 ```

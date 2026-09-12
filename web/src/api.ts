@@ -17,7 +17,7 @@ export interface SchemasResponse {
   comparison_available: boolean;
 }
 
-export interface Usage {
+interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
 }
