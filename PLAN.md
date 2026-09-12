@@ -30,7 +30,7 @@ client -> FastAPI gateway -> vLLM (quantized 3B, L4 GPU) -> SQL validation -> re
         (latency, tokens)                                 SELECT-only guardrail
 ```
 
-Training path: Spider train set -> QLoRA fine-tune (W&B tracked) -> merge adapter -> GPTQ quantize -> eval gate -> serve.
+Training path: Spider train set -> QLoRA fine-tune -> merge adapter -> GPTQ quantize -> eval gate -> serve.
 
 ## Milestones
 

@@ -51,6 +51,73 @@ There are three planes, and they are worth separating because they fail independ
 The rule that shaped this: **vLLM stays a stock, unmodified component.** Everything project-specific lives in the gateway.
 That is what makes the engine a version-pinned dependency rather than a fork, and it is why "upgrade vLLM" is a config change with an eval gate rather than a merge.
 
+## The stack, and why each piece
+
+Versions are the ones actually in the lockfiles, because "we use vLLM" stopped being a sufficient description of this system the day an unpinned minor cost 24 points of accuracy.
+
+### ML
+
+| | | Why |
+|---|---|---|
+| Llama-3.2 3B Instruct | `unsloth/Llama-3.2-3B-Instruct` | small enough to serve on one 24GB GPU with room for a KV cache, recent enough to be a fair test of a small model |
+| PEFT 0.20 + TRL 1.12 | QLoRA fine-tune | rank-16 adapters on a 4-bit base train in 3 hours on one L4; full fine-tuning would need far more memory for no obvious gain at this scale |
+| bitsandbytes 0.50 | NF4 quantized base during training | the memory trick that makes QLoRA fit at all |
+| llm-compressor 0.13 | GPTQ / AWQ W4A16 quantization | the maintained successor to AutoAWQ, from the vLLM team, so its output format is what the server reads natively |
+| **vLLM 0.28** | inference server | continuous batching is the whole reason one L4 sustains 74.5 QPS. **Pinned to a minor**, and treated as part of the model |
+| transformers 5.14 | tokenizer and artifact I/O | pulled in by vLLM; its version is why saved artifacts need `tokenizer_class` normalized to stay loadable by 4.x |
+| datasets 5.0 | loading Spider and rendering SFT data | the standard loader, and what `llm-compressor` wants for calibration |
+| Spider 1.0 | benchmark | an unambiguous metric (execution accuracy) and 166 real databases |
+
+### Backend
+
+| | | Why |
+|---|---|---|
+| Python 3.12 | | what the ML ecosystem targets; no reason to fight it |
+| FastAPI 0.141 + uvicorn 0.52 | the gateway | async is the right model for a service that mostly waits on a GPU, and the OpenAPI schema comes free |
+| pydantic 2.13 | request and response models | validation at the edge, and the response models double as the API's documentation |
+| **sqlglot 30** | the SELECT-only guardrail | a real SQL parser rather than a regex, which is the difference between a guardrail and a suggestion |
+| anthropic 1.4 | the Claude baseline and the demo's comparison | official SDK; token usage per call is what makes the $/query column real |
+| httpx 0.28 | the client to vLLM and the eval harness's transport | one library for sync and async, with streaming support the SSE path needs |
+| prometheus-client 0.26 | metrics | scraped by Managed Prometheus, no server to operate |
+| typer 0.27 + rich 15 | every script's CLI | consistent interfaces and readable tables for results that humans read |
+| pytest 9 + ruff 0.16 | 101 tests, lint and format | both run in CI on every push |
+
+### Frontend
+
+| | | Why |
+|---|---|---|
+| React 19 + TypeScript 5.9 | the demo page | the API response types are written once in `api.ts` and are the page's documentation of the contract |
+| Vite 7 | build | fast, and its dev proxy means the browser talks to one origin in development as it does in production |
+| Tailwind 4 | styling | no separate stylesheet to drift from the markup; the palette is defined once as theme tokens |
+| Playwright 1.63 | end-to-end test | the only test that exercises SSE in a real browser, and it captures the screenshots used to review layout |
+
+### Infrastructure
+
+| | | Why |
+|---|---|---|
+| **Pulumi 3.262** (Python) | all infrastructure | the same language as the rest of the project, and real control flow beats template interpolation for conditionals like `expose` |
+| pulumi-gcp 9.36 / pulumi-kubernetes 4.34 | providers | one program describes cloud resources and workloads, so ordering between them is explicit |
+| **GKE** 1.35 (zonal, Standard) | the cluster | a zonal control plane is free-tier, and Standard gives the node-pool control that scale-to-zero needs |
+| Compute Engine `g2-standard-8` | 1x NVIDIA L4, the GPU pool | the cheapest GPU that fits a 4-bit 3B with a useful KV cache |
+| Compute Engine `e2-standard-4` | the CPU pool | sized so the gateway tier is never the bottleneck the benchmark measures |
+| Cloud Storage | the 2.1GB serving artifact and Pulumi state | versioned, cheap, and readable by a pod through Workload Identity with no key |
+| Artifact Registry | the gateway image | regional, and the cluster pulls from it without credentials |
+| Cloud Build | image builds | native amd64, which an arm64 Mac is not, and no local Docker dependency |
+| Workload Identity | pod-to-GCS auth | the reason there is no service-account key anywhere in the cluster |
+| Managed Prometheus | metrics | scrapes both tiers via `PodMonitoring`; no Prometheus to run |
+| ingress-nginx 4.11 | TLS termination and routing | and the one component that needed `proxy-buffering: off` for SSE to stay streaming |
+| cert-manager 1.16 + Let's Encrypt | certificates | issues over HTTP-01 for an `sslip.io` hostname, so a real certificate needs no domain purchase |
+| GitHub Actions | CI and the eval gate | lint, tests and builds on every push; accuracy on demand against the live endpoint |
+
+### What is deliberately absent
+
+- **No orchestration framework** (LangChain and similar). The task is one prompt and one completion; a framework would add indirection over `httpx.post` and a version to track.
+- **No vector database.** Schemas come from the database being queried, so there is nothing to retrieve.
+- **No Redis.** Rate limiting is per-replica in-process, which is a documented trade rather than an omission.
+- **No Helm charts of our own.** Two upstream charts are installed, but our workloads are Pulumi resources, so there is one description of the system rather than two.
+- **No model server written here.** vLLM is stock; everything project-specific is in the gateway.
+- **No experiment tracker.** The plan called for W&B, but a single fine-tune with a known recipe produced one loss curve worth reading, and the training log plus the eval harness answered every question about it. Writing this section is what surfaced that the dependency had been carried without ever being wired up, and it has now been removed.
+
 ## Components and their contracts
 
 | Component | Talks to | Over | Contract |
