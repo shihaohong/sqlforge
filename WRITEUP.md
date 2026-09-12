@@ -3,6 +3,7 @@
 **A QLoRA fine-tuned Llama-3.2 3B, quantized to 4-bit and self-hosted on one NVIDIA L4, answers text-to-SQL within 2.8 points of Claude Haiku 4.5 at 1/58th the cost per query.**
 
 Live demo, both engines side by side: [136.65.15.120.sslip.io](https://136.65.15.120.sslip.io) (token required).
+How the system fits together: [ARCHITECTURE.md](ARCHITECTURE.md).
 Milestone log and raw numbers: [PLAN.md](PLAN.md).
 Everything that went wrong on the way: [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md).
 
@@ -25,7 +26,7 @@ Latency and cost are measured on the deployed service, not estimated from token 
 |---|---|---|---|
 | Llama-3.2 3B Instruct (base, zero-shot) | 61.4% | 2.66s mean (local) | n/a |
 | **Fine-tuned 3B (QLoRA)** | **72.7%** | 1.11s mean | n/a (not the serving artifact) |
-| **Fine-tuned 3B, GPTQ 4-bit (what is served)** | **71.2%** | **p50 304ms, p99 1.5s at 20 QPS** | **$0.0116** |
+| **Fine-tuned 3B, GPTQ 4-bit (what is served)** | **71.2%** | **p50 299ms, p99 1.5s at 20 QPS** | **$0.0118** |
 | Claude Haiku 4.5 (cost-matched competitor) | 74.0% | 0.95s mean | $0.68 |
 | Claude Opus 5 (quality ceiling, first 300) | 96.7% | 2.29s mean | $5.11 |
 

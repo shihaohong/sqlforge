@@ -12,7 +12,7 @@ Every milestone below either moves one of those numbers or makes them trustworth
 The project is done when the numbers are real.
 
 **Status: all six milestones complete.** The numbers are real, measured through the deployed service rather than estimated, and a regression in them now fails a check.
-The full argument is written up in [WRITEUP.md](WRITEUP.md); this file remains the log of what was decided and measured at each step.
+The full argument is written up in [WRITEUP.md](WRITEUP.md) and the system design in [ARCHITECTURE.md](ARCHITECTURE.md); this file remains the log of what was decided and measured at each step.
 
 ## Why text-to-SQL
 

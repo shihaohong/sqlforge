@@ -5,6 +5,7 @@
 > All six milestones are done and every number below was measured rather than estimated.
 >
 > - **[WRITEUP.md](WRITEUP.md)** - start here: the question, the results, and the economics including where self-hosting loses.
+> - **[ARCHITECTURE.md](ARCHITECTURE.md)** - the system design: components, contracts, request flows, failure behaviour, and control loops.
 > - **[PLAN.md](PLAN.md)** - the milestone log, with the decision and the measurement at each step.
 > - **[FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)** - 23 things that went wrong and what they taught, symptom first.
 
@@ -12,9 +13,10 @@ Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then
 
 The core question: can a QLoRA fine-tuned Llama-3.2 3B, self-hosted on a single L4 GPU, beat the cost-matched frontier API model (Claude Haiku 4.5) on Spider execution accuracy at a fraction of the per-query cost?
 
-## Results so far
+## Results
 
-Evaluated on the Spider 1.0 dev set with execution accuracy (the generated query runs against the database and returns the same rows as the gold query).
+Evaluated on the Spider 1.0 dev set with execution accuracy: the generated query runs against the database and returns the same rows as the gold query, or it does not.
+Latency and cost are measured on the deployed service rather than estimated.
 
 | Model | Execution accuracy | Latency | $/1k queries |
 |---|---|---|---|
@@ -22,16 +24,17 @@ Evaluated on the Spider 1.0 dev set with execution accuracy (the generated query
 | Claude Haiku 4.5 (zero-shot) | 74.0% (full dev) | mean 0.95s | $0.68 |
 | Claude Opus 5 (zero-shot, quality ceiling) | 96.7% (first 300) | mean 2.29s | $5.11 |
 | **Fine-tuned 3B (QLoRA, vLLM on L4)** | **72.7% (full dev)** | mean 1.11s | n/a (not the serving artifact) |
-| **Fine-tuned 3B, GPTQ 4-bit, served through the gateway** | **71.2% (full dev)** | p50 304ms, p99 1.5s at 20 QPS | **$0.0116** |
+| **Fine-tuned 3B, GPTQ 4-bit, served through the gateway** | **71.2% (full dev)** | p50 299ms, p99 1.5s at 20 QPS | **$0.0118** |
 
 The fine-tune moves the 3B model from 61.4% to 72.7% (+11.3 pts), statistically tied with Haiku 4.5 (74.0% full dev, but the fine-tune wins 74.0% vs 71.7% on a shared 300-example subset), with schema-hallucination errors cut by more than half.
 GPTQ 4-bit quantization keeps 71.2% (-1.4 pts) while cutting latency 2.2x and model size 2.9x; AWQ was measured too and rejected at -6.0 pts.
 
-Served on one L4 behind the FastAPI gateway, the quantized model scores **exactly the same 71.2%** as it does offline (736/1034 either way - the serving path adds no skew), sustains **20.4 QPS at p50 304ms / p99 1.5s**, saturates at **75 QPS / 2,450 output tokens/s**, and costs **$0.0116 per 1k queries: 59x less than Haiku 4.5** at the same accuracy within noise.
-The gateway's validation and guardrails are free - raw vLLM through the same driver is within run-to-run noise.
-Full concurrency-vs-latency table in [PLAN.md](PLAN.md).
+Served on one L4 behind the FastAPI gateway, the quantized model scores **exactly the same 71.2%** as it does offline (736/1034 either way, so the serving path adds no skew), sustains **20 QPS at p50 299ms / p99 1.5s**, saturates at **74.5 QPS / 2,419 output tokens/s**, and costs **$0.0118 per 1k queries against Haiku 4.5's $0.68 - 58x cheaper, 2.8 accuracy points behind**.
+The gateway's validation and guardrails are free: raw vLLM measured through the same driver is within run-to-run noise at every concurrency level.
 
-See [PLAN.md](PLAN.md) for the full milestone plan, decision log, and detailed results.
+That cost figure is a function of utilization, which is the part such comparisons usually omit.
+Break-even against Haiku 4.5 is **0.35 QPS, about 30,000 queries a day**; below that an idle GPU makes the API cheaper.
+[WRITEUP.md](WRITEUP.md) works through the economics, [ARCHITECTURE.md](ARCHITECTURE.md) covers how the components fit together, and [PLAN.md](PLAN.md) is the milestone-by-milestone log.
 
 ## How it works
 
@@ -261,6 +264,7 @@ data/               datasets, rendered SFT files, serving assets (gitignored)
 runs/               eval outputs (per-example jsonl + summary json) and load-test results
 PLAN.md             milestone plan, decision log, detailed results
 WRITEUP.md          the technical writeup: question, results, economics, tradeoffs
+ARCHITECTURE.md     system design: components, contracts, request flows, failure modes
 FUTURE_LEARNINGS.md what broke and what to do differently next time
 ```
 
