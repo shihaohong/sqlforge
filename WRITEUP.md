@@ -2,7 +2,8 @@
 
 **A QLoRA fine-tuned Llama-3.2 3B, quantized to 4-bit and self-hosted on one NVIDIA L4, answers text-to-SQL within 2.8 points of Claude Haiku 4.5 at 1/58th the cost per query.**
 
-Live demo, both engines side by side: [136.65.15.120.sslip.io](https://136.65.15.120.sslip.io) (token required).
+Live demo: taken down on 2026-09-12, once the numbers below were collected, so an idle GPU stopped billing.
+The stack is one `pulumi up` away from running again; see [README.md](README.md#current-deployment).
 How the system fits together: [ARCHITECTURE.md](ARCHITECTURE.md).
 Milestone log and raw numbers: [PLAN.md](PLAN.md).
 Everything that went wrong on the way: [FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md).

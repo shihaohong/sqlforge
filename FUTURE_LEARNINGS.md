@@ -261,3 +261,35 @@ Finding one dependency that had been carried but never used prompted a sweep for
 - **Metrics defined against metrics incremented**, since a counter nobody increments is a dashboard that reads zero forever.
 - **The CI test count against the local one** (above).
 - Dead-code tools (`vulture`, `knip`) last: they find the least, and most of what they find is a false positive - a function passed as a callable rather than called reads as unused to a regex and to some analyzers.
+
+## A failed `pulumi destroy` looks exactly like a successful one
+
+**Symptom:** the teardown was run, the command returned to the prompt without an obvious error, and the project kept billing about $700/month for another day.
+An L4 node, a CPU node, three disks, and a load balancer were all still running.
+
+**Cause:** the stack encrypts its secrets with a passphrase, so every operation needs `PULUMI_CONFIG_PASSPHRASE`.
+Without it, `pulumi destroy` exits in about two seconds with `constructing secrets manager: passphrase must be set` - before the preview, before touching a single resource.
+The stack history recorded it plainly once someone looked:
+
+```
+19:08:43  destroy  ->  failed   (0 resource changes)
+19:09:00  destroy  ->  failed   (0 resource changes)
+```
+
+Two seconds is far too fast for a real destroy of 23 resources, and that timing is the tell.
+The failure also happens to look like the successful case: a destroy of an already-empty stack is also fast and also quiet.
+
+**Lesson:** verify a teardown against the cloud provider, not against the exit code of the tool that was supposed to perform it.
+
+```bash
+gcloud container clusters list      # the only answer that counts
+gcloud compute instances list
+gcloud compute addresses list       # a detached static IP still bills
+```
+
+The general shape: for any operation whose entire purpose is to make something stop existing, confirm the absence directly.
+A tool reporting that it *tried* is not evidence, and with spend the feedback loop is a monthly invoice rather than a stack trace - which is exactly the loop that is too slow to catch this.
+
+Two corollaries found in the same teardown.
+A reserved IP is free *while attached* and billable the moment its load balancer goes away, so deleting a cluster silently converts a free resource into a charged one.
+And infrastructure created outside the IaC program never appears in `pulumi destroy`'s plan at all: a training VM from an earlier milestone had been stopped for days, which reads as costing nothing, but its 150GB disk was still charging the whole time. A stopped VM is not a free VM.

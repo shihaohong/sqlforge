@@ -7,7 +7,7 @@
 > - **[WRITEUP.md](WRITEUP.md)** - start here: the question, the results, and the economics including where self-hosting loses.
 > - **[ARCHITECTURE.md](ARCHITECTURE.md)** - the system design: components, contracts, request flows, failure behaviour, and control loops.
 > - **[PLAN.md](PLAN.md)** - the milestone log, with the decision and the measurement at each step.
-> - **[FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)** - 23 things that went wrong and what they taught, symptom first.
+> - **[FUTURE_LEARNINGS.md](FUTURE_LEARNINGS.md)** - 24 things that went wrong and what they taught, symptom first.
 
 Fine-tune, quantize, and serve a small (3B) open-weights text-to-SQL model, then benchmark it against frontier API models on quality, latency, and cost.
 
@@ -240,7 +240,9 @@ With the default limit of 1, the GPU pool holds one node and the vLLM deployment
 
 ## Current deployment
 
-The stack is deployed on GKE and the demo is live behind a token.
+**Nothing is deployed.** The stack was torn down on 2026-09-12 and the project's cloud spend is now zero: the cluster, both node pools, the reserved IP, the container images and the GCS artifact are all deleted.
+Every number in this repository was measured against the live stack before it came down.
+
 Bringing it up from nothing is a single `pulumi up` (about 26 minutes, most of it the GPU node's cold start); tearing it down is a single `pulumi destroy`.
 
 ```bash
@@ -249,7 +251,10 @@ cd deploy && pulumi destroy                   # removes the cluster and both wor
 ```
 
 Running costs, for calibration: the L4 node is about $0.85/hour and only exists while a vLLM pod is scheduled, the CPU node about $0.13/hour, and the zonal control plane is covered by GKE's free tier.
-Two things deliberately live outside the Pulumi program and survive a destroy, because `pulumi destroy` should not be able to delete model weights or invalidate a shared link: the GCS bucket holding the 2.1GB serving artifact (about $0.05/month) and the reserved IP address the demo hostname is built from (free while attached, a few dollars a month if left unattached).
+
+To redeploy, the two prerequisites above have to be rebuilt first, because both deliberately live outside the Pulumi program and were removed by hand: re-upload the serving artifact (regenerate it from the QLoRA adapter with `merge_adapter` then `quantize.py`) and rebuild the gateway image on Cloud Build. The demo hostname is derived from the reserved IP, so a redeploy gets a new address.
+
+One lesson worth keeping from the teardown: `pulumi destroy` fails in about two seconds with no resources touched if `PULUMI_CONFIG_PASSPHRASE` is not set, because the stack's secrets are passphrase-encrypted. It looks like a no-op rather than a failure, so confirm with `gcloud container clusters list` rather than trusting the command came back.
 
 ## Repository layout
 
